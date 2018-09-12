@@ -35,6 +35,9 @@ cvar_t	*sv_timedemo;
 cvar_t	*sv_fpsflood;
 
 cvar_t	*sv_enforcetime;
+#if KINGPIN
+cvar_t	*sv_enforcetime_kick;
+#endif
 
 cvar_t	*timeout;				// seconds without any message
 cvar_t	*zombietime;			// seconds to sink messages after disconnect
@@ -50,10 +53,16 @@ cvar_t	*allow_download_models;
 cvar_t	*allow_download_sounds;
 cvar_t	*allow_download_maps;
 cvar_t	*allow_download_pics;
+#if KINGPIN
+cvar_t	*allow_download_paks;
+#else
 cvar_t	*allow_download_textures;
 cvar_t	*allow_download_others;
+#endif
 
+#if !KINGPIN
 cvar_t *sv_airaccelerate;
+#endif
 
 cvar_t	*sv_noreload;			// don't reload level state when reentering
 
@@ -73,7 +82,9 @@ cvar_t	*sv_restartmap;
 cvar_t	*sv_password;
 
 //r1: filtering of strings for non-ASCII
+#if !KINGPIN
 cvar_t	*sv_filter_q3names;
+#endif
 cvar_t	*sv_filter_userinfo;
 cvar_t	*sv_filter_stringcmds;
 
@@ -83,8 +94,10 @@ cvar_t	*sv_blackholes;
 //r1: allow server to ban people who use nodelta (uses 3-5x more bandwidth than regular client)
 cvar_t	*sv_allownodelta;
 
+#if !KINGPIN
 //r1: allow server to block q2ace and associated hacks
 cvar_t	*sv_deny_q2ace;
+#endif
 
 //r1: max connections from a single IP (prevent DoS)
 cvar_t	*sv_iplimit;
@@ -109,16 +122,20 @@ cvar_t	*sv_randomframe;
 //r1: number of msecs to give
 cvar_t	*sv_msecs;
 
+#if !KINGPIN
 cvar_t	*sv_nc_kick;
 cvar_t	*sv_nc_announce;
 cvar_t	*sv_filter_nocheat_spam ;
+#endif
 
 cvar_t	*sv_gamedebug;
 cvar_t	*sv_recycle;
 
 cvar_t	*sv_uptime;
 
+#if !KINGPIN
 cvar_t	*sv_strafejump_hack;
+#endif
 cvar_t	*sv_reserved_slots;
 cvar_t	*sv_reserved_password;
 
@@ -127,25 +144,33 @@ cvar_t	*sv_allow_unconnected_cmds;
 
 cvar_t	*sv_strict_userinfo_check;
 
+#if !KINGPIN
 cvar_t	*sv_calcpings_method;
+#endif
 
 cvar_t	*sv_no_game_serverinfo;
 
 cvar_t	*sv_mapdownload_denied_message;
 cvar_t	*sv_mapdownload_ok_message;
 
+#if !KINGPIN
 cvar_t	*sv_downloadserver;
 
 cvar_t	*sv_max_traces_per_frame;
+#endif
 
 cvar_t	*sv_ratelimit_status;
 
+#if !KINGPIN
 cvar_t	*sv_new_entflags;
+#endif
 
 cvar_t	*sv_validate_playerskins;
 
 cvar_t	*sv_idlekick;
+#if !KINGPIN
 cvar_t	*sv_packetentities_hack;
+#endif
 cvar_t	*sv_entity_inuse_hack;
 
 cvar_t	*sv_force_reconnect;
@@ -163,24 +188,44 @@ cvar_t	*sv_rcon_ratelimit;
 
 cvar_t	*sv_show_name_changes;
 
+// MH: log connecting client userinfo
+cvar_t	*sv_log_connectinfo;
+
+// MH: handle name clashes?
+cvar_t	*sv_unique_names;
+
+// MH: broadcast connecting players?
+cvar_t	*sv_show_connections;
+
 cvar_t	*sv_optimize_deltas;
 
 cvar_t	*sv_predict_on_lag;
 cvar_t	*sv_format_string_hack;
 
-cvar_t	*sv_lag_stats;
+#if !KINGPIN
 cvar_t	*sv_func_plat_hack;
+#endif
 cvar_t	*sv_max_packetdup;
+
+// MH: default packetdup
+cvar_t	*sv_packetdup;
+
 cvar_t	*sv_redirect_address;
+#if !KINGPIN
 cvar_t	*sv_fps;
 
 cvar_t	*sv_max_player_updates;
+#endif
 cvar_t	*sv_minpps;
 cvar_t	*sv_disconnect_hack;
 
+#if !KINGPIN
 cvar_t	*sv_interpolated_pmove;
+#endif
 
 cvar_t	*sv_global_master;
+
+#if !KINGPIN
 cvar_t	*sv_cheaternet;
 cvar_t	*sv_cheaternet_action;
 
@@ -191,9 +236,37 @@ cvar_t	*sv_timescale_kick;
 
 cvar_t	*sv_timescale_skew_check;
 cvar_t	*sv_timescale_skew_kick;
+#endif
 
 cvar_t	*sv_features;
 cvar_t	*g_features;
+
+// MH: disable fov zooming
+cvar_t	*sv_no_zoom;
+
+// MH: idle mode
+cvar_t	*g_idle;
+cvar_t	*sv_autoidle;
+
+// MH: minimize memory usage
+cvar_t	*sv_minimize_memory;
+
+#if KINGPIN
+// MH: allow models that are not on the server
+cvar_t	*sv_allow_any_model;
+
+// MH: compression level
+cvar_t	*sv_compress;
+
+// MH: compression level for downloads
+cvar_t	*sv_compress_downloads;
+
+// MH: pre-cache downloads to the system file cache
+cvar_t	*sv_download_precache;
+
+// MH: upstream bandwidth available
+cvar_t	*sv_bandwidth;
+#endif
 
 #ifdef ANTICHEAT
 cvar_t	*sv_require_anticheat;
@@ -234,16 +307,26 @@ linkednamelist_t	nullcmds;
 linkednamelist_t	lrconcmds;
 linkedvaluelist_t	serveraliases;
 
+#if KINGPIN
+// MH: downloadable client files
+linkednamelist_t	clientfiles;
+#endif
+
 //i hate you snake
 netblock_t			blackhole_exceptions;
 
+#if !KINGPIN
 unsigned			cheaternet_token;
 netadr_t			cheaternet_adr;
+#endif
 
+#ifdef USE_PYROADMIN
 int		pyroadminid;
+#endif
 
 //void Master_Shutdown (void);
 
+#if !KINGPIN
 static int CharVerify (char c)
 {
 	if (sv_filter_q3names->intvalue == 2)
@@ -273,6 +356,7 @@ static int NameColorFilterCheck (const char *newname)
 
 	return 0;
 }
+#endif
 
 static int StringIsWhitespace (const char *name)
 {
@@ -364,26 +448,17 @@ void SV_CleanClient (client_t *drop)
 	//shouldn't be necessary, but...
 	drop->messageListData = drop->msgListEnd = drop->msgListStart = NULL;
 
+#if !KINGPIN
 	//r1: free version string
 	if (drop->versionString)
 	{
 		Z_Free (drop->versionString);
 		drop->versionString = NULL;
 	}
+#endif
 
-	//r1: download filename
-	if (drop->downloadFileName)
-	{
-		Z_Free (drop->downloadFileName);
-		drop->downloadFileName = NULL;
-	}
-
-	//r1: download data
-	if (drop->download)
-	{
-		FS_FreeFile (drop->download);
-		drop->download = NULL;
-	}
+	// MH: free download stuff
+	SV_CloseDownload(drop);
 
 	//r1: free baselines
 	if (drop->lastlines)
@@ -392,12 +467,14 @@ void SV_CleanClient (client_t *drop)
 		drop->lastlines = NULL;
 	}
 
+#if !KINGPIN
 	//r1: disconnected before cheatnet message could show?
 	if (drop->cheaternet_message)
 	{
 		Z_Free (drop->cheaternet_message);
 		drop->cheaternet_message = NULL;
 	}
+#endif
 
 #ifdef ANTICHEAT
 	bad = &drop->anticheat_bad_files;
@@ -419,6 +496,23 @@ void SV_CleanClient (client_t *drop)
 		Z_Free (last->name);
 		Z_Free (last);
 	}
+#endif
+
+	// MH: client demo
+	if (drop->demofile)
+	{
+		int len = -1;
+		fwrite (&len, 4, 1, drop->demofile);
+		fclose (drop->demofile);
+		drop->demofile = NULL;
+	}
+
+	drop->state = cs_free; // MH: slot is now free
+
+#ifdef _WIN32
+	// MH: handle auto priority
+	if (!strcmp(win_priority->string, "auto"))
+		win_priority->changed(win_priority, "auto", win_priority->string);
 #endif
 }
 
@@ -502,18 +596,18 @@ SV_StatusString
 Builds the string that is sent as heartbeats and status replies
 ===============
 */
-static const char *SV_StatusString (void)
+
+// MH: separated from SV_StatusString so that it can be used for Gamespy requests too
+static char *StatusString (void)
 {
 	char	*serverinfo;
-	char	player[1024];
-	static char	status[MAX_MSGLEN - 16];
-	int		i;
-	client_t	*cl;
-	int		statusLength;
-	int		playerLength;
-//	player_state_t	*ps;
 
 	serverinfo = Cvar_Serverinfo();
+
+#if KINGPIN
+	// MH: set "game" to client-side value
+	Info_SetValueForKey(serverinfo, "game", Cvar_VariableString("clientdir"));
+#endif
 
 	//r1: add uptime info
 	if (sv_uptime->intvalue)
@@ -531,29 +625,15 @@ static const char *SV_StatusString (void)
 		uptimeString[0] = 0;
 		secs = (uint32)(time(NULL) - server_start_time);
 
-		while (secs/60/60/24/365 >= 1)
-		{
-			years++;
-			secs -= 60*60*24*365;
-		}
-
-		while (secs/60/60/24 >= 1)
-		{
-			days++;
-			secs -= 60*60*24;
-		}
-
-		while (secs/60/60 >= 1)
-		{
-			hours++;
-			secs -= 60*60;
-		}
-
-		while (secs/60 >= 1)
-		{
-			mins++;
-			secs -= 60;
-		}
+		// MH: tweaked
+		years = secs/(60*60*24*365);
+		secs %= 60*60*24*365;
+		days = secs/(60*60*24);
+		secs %= 60*60*24;
+		hours = secs/(60*60);
+		secs %= 60*60;
+		mins = secs/60;
+		secs %= 60;
 
 		if (years)
 		{
@@ -645,8 +725,36 @@ static const char *SV_StatusString (void)
 	//r1: hide reserved slots
 	Info_SetValueForKey (serverinfo, "maxclients", va("%d", maxclients->intvalue - sv_reserved_slots->intvalue));
 
+#if !KINGPIN
 	//r1: set port to help nat traversal
 	Info_SetValueForKey (serverinfo, "port", va("%d", server_port));
+#endif
+
+	// MH: let them know that the server shouldn't be listed publicly
+	if (!public_server->intvalue)
+		Info_SetValueForKey (serverinfo, "private", "1");
+
+#if KINGPIN
+	// MH: useful to see if the server is passworded/locked (Qtracker shows a padlock)
+	if (sv_password->string[0] || sv_locked->intvalue)
+		Info_SetValueForKey (serverinfo, "password", "1");
+#endif
+
+	return serverinfo;
+}
+
+static const char *SV_StatusString (void)
+{
+	char	*serverinfo;
+	char	player[1024];
+	static char	status[MAX_MSGLEN - 16];
+	int		i;
+	client_t	*cl;
+	int		statusLength;
+	int		playerLength;
+//	player_state_t	*ps;
+
+	serverinfo = StatusString();
 
 	strcpy (status, serverinfo);
 	strcat (status, "\n");
@@ -757,6 +865,7 @@ static void SVC_Ack (void)
 	}
 }
 
+#if !KINGPIN
 static void SVC_CheaterNet_Reply (void)
 {
 	char		*info;
@@ -886,6 +995,7 @@ static void SVC_CheaterNet_Reply (void)
 		}
 	}
 }
+#endif
 
 /*
 ================
@@ -897,7 +1007,7 @@ The second parameter should be the current protocol version number.
 */
 static void SVC_Info (void)
 {
-	char	string[64];
+	char	string[80]; // MH: client supports 80
 	int		i, count;
 	int		version;
 
@@ -906,7 +1016,11 @@ static void SVC_Info (void)
 
 	version = atoi (Cmd_Argv(1));
 
+#if KINGPIN
+	if (version != PROTOCOL_ORIGINAL)
+#else
 	if (version != PROTOCOL_ORIGINAL && version != PROTOCOL_R1Q2)
+#endif
 	{
 		//r1: return instead of sending another packet. prevents spoofed udp packet
 		//    causing server <-> server info loops.
@@ -919,8 +1033,9 @@ static void SVC_Info (void)
 			if (svs.clients[i].state >= cs_spawning)
 				count++;
 
-		Com_sprintf (string, sizeof(string), "%20s %8s %2i/%2i\n",
-			hostname->string, sv.name, count, maxclients->intvalue - sv_reserved_slots->intvalue);
+		// MH: crop hostname if required to make string fit buffer, and don't bother with padding
+		Com_sprintf (string, sizeof(string), "%.*s %s %2i/%2i\n",
+			sizeof(string) - strlen(sv.name) - 9, hostname->string, sv.name, count, maxclients->intvalue - sv_reserved_slots->intvalue);
 	}
 
 	Netchan_OutOfBandPrint (NS_SERVER, &net_from, "info\n%s", string);
@@ -1007,7 +1122,11 @@ static void SVC_GetChallenge (void)
 	}
 
 	// send it back
+#if KINGPIN
+	Netchan_OutOfBandPrint (NS_SERVER, &net_from, "challenge %d", svs.challenges[i].challenge);
+#else
 	Netchan_OutOfBandPrint (NS_SERVER, &net_from, "challenge %d p=34,35", svs.challenges[i].challenge);
+#endif
 }
 
 #if 0
@@ -1074,10 +1193,115 @@ static qboolean SV_UserinfoValidate (const char *userinfo)
 	return true;
 }
 
+// MH: handle name clashes
+static void SV_NameClash (client_t *cl, char *userinfo)
+{
+	char	*val;
+	int		i;
+
+	if (!sv_unique_names->intvalue)
+		return;
+
+	val = Info_ValueForKey (userinfo, "name");
+
+	if (val[0])
+	{
+		//truncate
+#if KINGPIN
+		val[13] = 0;
+#else
+		val[15] = 0;
+#endif
+
+		for (i=0; i<maxclients->intvalue; i++)
+		{
+			client_t *cl2 = &svs.clients[i];
+
+			if (cl2 == cl || cl2->state <= cs_zombie)
+				continue;
+
+			if (!strcmp(cl2->name, val))
+			{
+				if (cl->name[0])
+					strcpy(val, cl->name); // keep the existing name
+				else
+				{ // append number to name
+					int n, len;
+#if KINGPIN
+					val[11] = 0;
+#else
+					val[13] = 0;
+#endif
+					len = strlen(val);
+					for (n = 2; ; n++)
+					{
+						sprintf(val + len, "%2d", n);
+						for (i=0 ; i<maxclients->intvalue ; i++)
+						{
+							cl2 = &svs.clients[i];
+							if (cl2 == cl || cl2->state <= cs_zombie)
+								continue;
+							if (!strcmp(cl2->name, val))
+								break;
+						}
+						if (i == maxclients->intvalue)
+							break;
+					}
+					cl->notes |= NOTE_NAMECLASH;
+				}
+				Info_SetValueForKey (userinfo, "name", val);
+				break;
+			}
+		}
+	}
+}
+
 static void SV_UpdateUserinfo (client_t *cl, qboolean notifyGame)
 {
 	char	*val;
 	int		i;
+
+#if KINGPIN
+	// MH: only allow models that the server has (let game dll handle teamplay)
+	cl->badmodel[0] = 0;
+	if (!sv_allow_any_model->intvalue && !Cvar_IntValue("teamplay"))
+	{
+		char *s;
+		val = Info_ValueForKey (cl->userinfo, "skin");
+		s = strrchr(val, '/');
+		if (s)
+		{
+			*s = 0;
+			Q_strlwr(val);
+			if (strcmp(val, "female_chick") && strcmp(val, "male_thug") && strcmp(val, "male_runt")
+				&& FS_LoadFile(va("players/%s/head.mdx", val), NULL) <= 0)
+			{
+				strcpy(cl->badmodel, val);
+				if (cl->skin[0])
+					Info_SetValueForKey (cl->userinfo, "skin", cl->skin);
+				else if (strstr(val, "female"))
+					Info_SetValueForKey(cl->userinfo, "skin", va("female_chick/%03d %03d %03d", 1+(rand()%22), 12+(rand()%10), 1+(rand()%6)));
+				else
+					Info_SetValueForKey(cl->userinfo, "skin", va("male_thug/%03d %03d %03d", 8+(rand()%24), 1+(rand()%36), 1+(rand()%17)));
+			}
+		}
+	}
+#endif
+
+	// MH: disable fov zooming
+	if (sv_no_zoom->intvalue)
+	{
+		int fov = atoi(Info_ValueForKey(cl->userinfo, "fov"));
+		if (fov < 90)
+		{
+			if (cl->state >= cs_connected)
+				SV_ClientPrintf (cl, PRINT_HIGH, "FOV zooming is not allowed\n");
+			Info_SetValueForKey(cl->userinfo, "fov", "90");
+		}
+	}
+
+	// MH: handle name clashes
+	SV_NameClash(cl, cl->userinfo);
 
 	// call prog code to allow overrides
 	if (notifyGame)
@@ -1116,10 +1340,11 @@ static void SV_UpdateUserinfo (client_t *cl, qboolean notifyGame)
 	{
 		i = atoi(val);
 		cl->rate = i;
-		if (cl->rate < 100)
-			cl->rate = 100;
-		if (cl->rate > 15000)
-			cl->rate = 15000;
+		// MH: minumum raised from 100 to 1000, and maximum from 15000 to 99000
+		if (cl->rate < 1000)
+			cl->rate = 1000;
+		if (cl->rate > 99000)
+			cl->rate = 99000;
 	}
 	else
 		cl->rate = 5000;
@@ -1134,6 +1359,13 @@ static void SV_UpdateUserinfo (client_t *cl, qboolean notifyGame)
 		if (cl->messagelevel < 0)
 			cl->messagelevel = 0;
 	}
+
+#if KINGPIN
+	// MH: retain current skin
+	val = Info_ValueForKey (cl->userinfo, "skin");
+	if (val[0])
+		strncpy(cl->skin, val, sizeof(cl->skin) - 1);
+#endif
 }
 
 /*
@@ -1182,15 +1414,22 @@ static void SVC_DirectConnect (void)
 
 	//r1: check version first of all
 	protocol= atoi(Cmd_Argv(1));
+#if KINGPIN
+	if (protocol != PROTOCOL_ORIGINAL)
+	{
+		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nYou need Kingpin to play on this server.\n");
+#else
 	if (protocol != PROTOCOL_ORIGINAL && protocol != PROTOCOL_R1Q2)
 	{
 		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nYou need Quake II 3.19 or higher to play on this server.\n");
+#endif
 		Com_DPrintf ("    rejected connect from protocol %i\n", protocol);
 		return;
 	}
 
 	qport = atoi(Cmd_Argv(2));
 
+#if !KINGPIN
 	if (protocol == PROTOCOL_R1Q2)
 	{
 		//work around older protocol 35 clients
@@ -1239,6 +1478,7 @@ static void SVC_DirectConnect (void)
 		}
 	}
 	else
+#endif
 	{
 		msglen = 0;
 		version = 0;
@@ -1277,29 +1517,6 @@ static void SVC_DirectConnect (void)
 	{
 		Com_DPrintf ("    server locked\n");
 		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nServer is locked.\n");
-		return;
-	}
-
-	//r1: limit connections from a single IP
-	previousclients = 0;
-	for (i=0,cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
-	{
-		if (cl->state == cs_free)
-			continue;
-		if (NET_CompareBaseAdr (adr, &cl->netchan.remote_address))
-		{
-			//r1: zombies are less dangerous
-			if (cl->state == cs_zombie)
-				previousclients++;
-			else
-				previousclients += 2;
-		}
-	}
-
-	if (previousclients >= sv_iplimit->intvalue * 2)
-	{
-		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nToo many connections from your host.\n");
-		Com_DPrintf ("    too many connections\n");
 		return;
 	}
 
@@ -1391,6 +1608,17 @@ static void SVC_DirectConnect (void)
 		}
 	}*/
 
+#if KINGPIN
+	// MH: at least v1.20 is needed for download support
+	version = atoi(Info_ValueForKey(userinfo, "ver"));
+	if (version < 120)
+	{
+		Com_DPrintf ("    old version\n");
+		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nYou need an updated version of Kingpin to connect to this server. Please install the v1.21 patch from www.kingpin.info\n");
+		return;
+	}
+#endif
+
 	pass = Info_ValueForKey (userinfo, "name");
 
 	if (!pass[0] || StringIsWhitespace (pass))
@@ -1399,12 +1627,14 @@ static void SVC_DirectConnect (void)
 		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nPlease set your name before connecting.\n");
 		return;
 	}
+#if !KINGPIN
 	else if (NameColorFilterCheck (pass))
 	{
 		Com_DPrintf ("    color name filter check failed\n");
 		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nQuake 3 style colored names are not permitted on this server.\n");
 		return;
 	}
+#endif
 	else if (Info_KeyExists (userinfo, "ip"))
 	{
 		char	*p;
@@ -1416,7 +1646,11 @@ static void SVC_DirectConnect (void)
 
 	pass = Info_ValueForKey (userinfo, "password");
 
+#if KINGPIN
+	if (sv_password->string[0])
+#else
 	if (sv_password->string[0] && strcmp(sv_password->string, "none"))
+#endif
 	{
 		if (!pass[0])
 		{
@@ -1486,6 +1720,10 @@ static void SVC_DirectConnect (void)
 				//Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nPlayer '%s' is already connected from your address.\n", cl->name);
 				//SV_BroadcastPrintf (PRINT_HIGH, "%s was dropped: ghost client", cl->name);
 				Com_Printf ("Dropping %s, ghost reconnect\n", LOG_SERVER|LOG_DROP, cl->name);
+#if KINGPIN
+				// MH: indicate to the game that the player is reconnecting
+				cl->edict->client->ping = -1;
+#endif
 				SV_DropClient (cl, false);
 				//return;
 			}
@@ -1506,12 +1744,40 @@ static void SVC_DirectConnect (void)
 				if (adr->port != cl->netchan.remote_address.port)
 					Com_Printf ("WARNING: %s[%s] reconnected from a different port (%d -> %d)! Tried to use ratbot/proxy or has broken router?\n", LOG_SERVER|LOG_WARNING, Info_ValueForKey (userinfo, "name"), NET_AdrToString (adr), ShortSwap (cl->netchan.remote_address.port), ShortSwap(adr->port));
 
+#if !KINGPIN
 				if (cl->protocol != protocol)
 					Com_Printf ("WARNING: %s[%s] reconnected using a different protocol (%d -> %d)! Why would that happen?\n", LOG_SERVER|LOG_WARNING, Info_ValueForKey (userinfo, "name"), NET_AdrToString (adr), cl->protocol, protocol);
+#endif
 			}
 
 			strcpy (saved_var, cl->reconnect_var);
 			strcpy (saved_val, cl->reconnect_value);
+
+			newcl = cl;
+			goto gotnewcl;
+		}
+	}
+
+	// MH: if there is a client with the same name and no contact for 5+ seconds, reuse their slot (they could have dynamic IP)
+	pass = Info_ValueForKey (userinfo, "name");
+	for (i=0,cl=svs.clients ; i < maxclients->intvalue; i++,cl++)
+	{
+		if (cl->state <= cs_zombie)
+			continue;
+
+		if (!strcmp(pass, cl->name) && (curtime - cl->netchan.last_received) > 5000)
+		{
+			Com_DPrintf ("    client already found with same name\n");
+			Com_Printf ("Dropping %s, ghost reconnect (name match)\n", LOG_SERVER|LOG_DROP, cl->name);
+#if KINGPIN
+			// MH: indicate to the game that the player is reconnecting
+			cl->edict->client->ping = -1;
+#endif
+			SV_DropClient (cl, false);
+
+			Com_DPrintf ("%s:reconnect\n", pass);
+
+			SV_CleanClient (cl);
 
 			newcl = cl;
 			goto gotnewcl;
@@ -1574,13 +1840,42 @@ static void SVC_DirectConnect (void)
 	}
 
 gotnewcl:	
+
+	// MH: moved here to allow "ghost" checks first
+	//r1: limit connections from a single IP
+	previousclients = 0;
+	for (i=0,cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
+	{
+		if (cl->state == cs_free)
+			continue;
+		if (NET_CompareBaseAdr (adr, &cl->netchan.remote_address))
+		{
+			//r1: zombies are less dangerous
+			if (cl->state == cs_zombie)
+				previousclients++;
+			else
+				previousclients += 2;
+		}
+	}
+
+	if (previousclients >= sv_iplimit->intvalue * 2)
+	{
+		Netchan_OutOfBandPrint (NS_SERVER, adr, "print\nToo many connections from your host.\n");
+		Com_DPrintf ("    too many connections\n");
+		return;
+	}
+
 	// build a new connection
 	// accept the new client
 	// this is the only place a client_t is ever initialized
 	
 	sv_client = newcl;
 
+#if KINGPIN
+	if (newcl->messageListData || newcl->downloadFileName || newcl->download || newcl->lastlines)
+#else
 	if (newcl->messageListData || newcl->versionString || newcl->downloadFileName || newcl->download || newcl->lastlines)
+#endif
 	{
 		Com_Printf ("WARNING: Client %d never got cleaned up, possible memory leak.\n", LOG_SERVER|LOG_WARNING, (int)(newcl - svs.clients));
 		SV_CleanClient (newcl);
@@ -1600,10 +1895,24 @@ gotnewcl:
 	newcl->edict = ent;
 	newcl->challenge = challenge; // save challenge for checksumming
 
+#if KINGPIN
+	// MH: check if it is a patched client
+	pass = Info_ValueForKey(userinfo, "ver");
+	if (!strncmp(pass, "121p", 4))
+		newcl->patched = atoi(pass + 4);
+#endif
+
 	reconnected = (!sv_force_reconnect->string[0] || saved_var[0] || NET_IsLANAddress(adr));
 
 	if (reconnected)
 	{
+		// MH: log userinfo (maybe useful for debugging or stats)
+		if (sv_log_connectinfo->intvalue)
+			Com_Printf ("ConnectInfo: %s\n", LOG_SERVER, userinfo);
+
+		// MH: handle name clashes
+		SV_NameClash(newcl, userinfo);
+
 		//if (!ge->edicts[0].client)
 		//	Com_Error (ERR_DROP, "Missed a call to InitGame");
 		// get the game a chance to reject this connection or modify the userinfo
@@ -1633,11 +1942,28 @@ gotnewcl:
 			if (sv_gamedebug->intvalue > 1)
 				Sys_DebugBreak ();
 		}
+
+		// MH: notify other players of the new connection
+		if (sv_show_connections->intvalue)
+		{
+			char	buf[64];
+
+			Com_sprintf(buf, sizeof(buf), "%s connected\n", Info_ValueForKey(userinfo, "name"));
+
+			for (i=0,cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
+			{
+				if (PRINT_HIGH < cl->messagelevel || cl->state != cs_spawned)
+					continue;
+
+				MSG_BeginWriting (svc_print);
+				MSG_WriteByte (PRINT_CHAT);
+				MSG_WriteString (buf);
+				SV_AddMessage (cl, true);
+			}
+		}
 	}
 
 	newcl->protocol_version = version;
-
-	newcl->min_ping = 9999;
 
 	//moved netchan to here so userinfo changes can see remote address
 	Netchan_Setup (NS_SERVER, &newcl->netchan, adr, protocol, qport, msglen);
@@ -1696,11 +2022,15 @@ gotnewcl:
 		ac = "";
 
 	// send the connect packet to the client
+#if KINGPIN
+	Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect");
+#else
 	// r1: note we could ideally send this twice but it prints unsightly message on original client.
 	if (sv_downloadserver->string[0])
 		Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect dlserver=%s%s", sv_downloadserver->string, ac);
 	else
 		Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect%s", ac);
+#endif
 
 	if (sv_connectmessage->modified)
 	{
@@ -1716,8 +2046,10 @@ gotnewcl:
 	//send cheaternet query if enabled
 	if (reconnected)
 	{
+#if !KINGPIN
 		if (sv_cheaternet->intvalue && !NET_IsLANAddress (adr) && cheaternet_adr.port)
 			Netchan_OutOfBandPrint (NS_SERVER, &cheaternet_adr, "query\n%u\n%d\n%u\n%s\n%s\n", cheaternet_token, newcl - svs.clients, newcl->challenge, Info_ValueForKey (userinfo, "name"), NET_AdrToString (adr));
+#endif
 
 		//only show message on reconnect
 		if (sv_connectmessage->string[0])
@@ -1736,6 +2068,10 @@ gotnewcl:
 	newcl->lastlines = Z_TagMalloc (sizeof(entity_state_t) * MAX_EDICTS, TAGMALLOC_CL_BASELINES);
 	//memset (newcl->lastlines, 0, sizeof(entity_state_t) * MAX_EDICTS);
 
+	// MH: allocate client_entities now if it was delayed to reduce memory usage
+	if (!svs.client_entities)
+		svs.client_entities = Z_TagMalloc (sizeof(entity_state_t)*svs.num_client_entities, TAGMALLOC_CL_ENTS);
+
 	//r1: per client baselines are now used
 	//SV_CreateBaseline (newcl);
 	
@@ -1750,6 +2086,24 @@ gotnewcl:
 	//newcl->lastmessage = svs.realtime;	// don't timeout
 
 	newcl->lastmessage = svs.realtime - ((timeout->intvalue - 5) * 1000);
+
+	// MH: set default packetdup
+	if (newcl->rate >= 15000)
+	{
+		newcl->netchan.packetdup = sv_packetdup->intvalue;
+		if (newcl->netchan.packetdup > sv_max_packetdup->intvalue)
+			newcl->netchan.packetdup = sv_max_packetdup->intvalue;
+	}
+
+	// MH: disable idle mode
+	if (g_idle->intvalue)
+		Cvar_ForceSet("g_idle", "0");
+
+#ifdef _WIN32
+	// MH: handle auto priority
+	if (!strcmp(win_priority->string, "auto") && !win_priority->intvalue)
+		win_priority->changed(win_priority, "auto", win_priority->string);
+#endif
 }
 
 static int Rcon_Validate (void)
@@ -1798,8 +2152,10 @@ void Blackhole (netadr_t *from, qboolean isAutomatic, int mask, int method, cons
 	//terminate
 	temp->reason[sizeof(temp->reason)-1] = 0;
 
+	// MH: reason can be empty
 	if (sv.state)
-		Com_Printf ("Added %s/%d to blackholes for %s.\n", LOG_SERVER|LOG_EXPLOIT, NET_inet_ntoa (temp->ip), mask, temp->reason);
+		Com_Printf (temp->reason[0] ? "Added %s/%d to blackholes for %s.\n" : "Added %s/%d to blackholes.\n", // MH: reason is now optional
+			LOG_SERVER|LOG_EXPLOIT, NET_inet_ntoa (temp->ip), mask, temp->reason);
 }
 
 qboolean UnBlackhole (int index)
@@ -1837,6 +2193,10 @@ static const char *FindPlayer (netadr_t *from)
 {
 	int			i;
 	client_t	*cl;
+
+	// MH: fix for killserver via rcon
+	if (!svs.initialized)
+		return "";
 
 	for (i=0, cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
 	{
@@ -1889,7 +2249,8 @@ static void SVC_RemoteCommand (void)
 	{
 		Com_Printf ("Bad rcon_password.\n", LOG_GENERAL);
 		Com_EndRedirect (true);
-		Com_Printf ("Bad rcon from %s[%s] (%s).\n", LOG_SERVER|LOG_ERROR, NET_AdrToString (&net_from), FindPlayer(&net_from), Cmd_Args());
+		// MH: don't log password or command
+		Com_Printf ("Bad rcon from %s[%s]\n", LOG_SERVER|LOG_ERROR, NET_AdrToString (&net_from), FindPlayer(&net_from));
 	}
 	else
 	{
@@ -2043,18 +2404,14 @@ Clients that are in the game can still send
 connectionless packets.
 =================
 */
-static void SV_ConnectionlessPacket (void)
+// MH: separated from SV_ConnectionlessPacket so that it can be used on Gamespy requests too
+static qboolean CheckBlackholes (void)
 {
 	netblock_t	*whitehole = &blackhole_exceptions;
 	blackhole_t *blackhole = &blackholes;
-	char		*s;
-	char		*c;
-	qboolean	whiteholed;
 	uint32		network_ip;
 
 	network_ip = *(uint32 *)net_from.ip;
-
-	whiteholed = false;
 
 	//r1: whiteholes (thanks WORM!)
 	while (whitehole->next)
@@ -2062,30 +2419,36 @@ static void SV_ConnectionlessPacket (void)
 		whitehole = whitehole->next;
 		if ((network_ip & whitehole->mask) == (whitehole->ip & whitehole->mask))
 		{
-			whiteholed = true;
-			break;
+			return false;
 		}
 	}
 
 	//r1: ignore packets if IP is blackholed for abuse
-	if (!whiteholed)
+	while (blackhole->next)
 	{
-		while (blackhole->next)
+		blackhole = blackhole->next;
+		if ((network_ip & blackhole->mask) == (blackhole->ip & blackhole->mask))
 		{
-			blackhole = blackhole->next;
-			if ((network_ip & blackhole->mask) == (blackhole->ip & blackhole->mask))
+			//do rate limiting in case there is some long-ish reason
+			if (blackhole->method == BLACKHOLE_MESSAGE)
 			{
-				//do rate limiting in case there is some long-ish reason
-				if (blackhole->method == BLACKHOLE_MESSAGE)
-				{
-					RateSample (&blackhole->ratelimit);
-					if (!RateLimited (&blackhole->ratelimit, 2))
-						Netchan_OutOfBandPrint (NS_SERVER, &net_from, "print\n%s\n", blackhole->reason);
-				}
-				return;
+				RateSample (&blackhole->ratelimit);
+				if (!RateLimited (&blackhole->ratelimit, 2))
+					Netchan_OutOfBandPrint (NS_SERVER, &net_from, "print\n%s\n", blackhole->reason);
 			}
+			return true;
 		}
 	}
+
+	return false;
+}
+
+static void SV_ConnectionlessPacket (void)
+{
+	char		*s;
+	char		*c;
+
+	if (CheckBlackholes()) return;
 
 	//r1: should never happen, don't even bother trying to parse it
 	if (net_message.cursize > 544)
@@ -2132,8 +2495,10 @@ static void SV_ConnectionlessPacket (void)
 		SVC_RemoteCommand ();
 	else if (!strcmp(c, "ack"))
 		SVC_Ack ();
+#if !KINGPIN
 	else if (!strcmp(c, "cheaternetreply"))
 		SVC_CheaterNet_Reply ();
+#endif
 #ifdef USE_PYROADMIN
 	else if (!strcmp (c, "cmd"))
 		SVC_PyroAdminCommand (s);
@@ -2145,123 +2510,6 @@ static void SV_ConnectionlessPacket (void)
 
 
 //============================================================================
-
-/*
-===================
-SV_CalcPings
-
-Updates the cl->ping variables
-===================
-*/
-static void SV_CalcPings (void)
-{
-	int			i, j;
-	client_t	*cl;
-	int			total, count;
-	int			best;
-
-	for (i=0 ; i<maxclients->intvalue ; i++)
-	{
-		cl = &svs.clients[i];
-		if (cl->state != cs_spawned)
-			continue;
-
-		if (sv_calcpings_method->intvalue == 1)
-		{
-			total = 0;
-			count = 0;
-			for (j=0 ; j<LATENCY_COUNTS ; j++)
-			{
-				if (cl->frame_latency[j] > 0)
-				{
-					count++;
-					total += cl->frame_latency[j];
-				}
-			}
-			if (!count)
-				cl->ping = 0;
-			else
-				cl->ping = total / count;
-
-			if (cl->ping)
-			{
-				if (cl->ping < cl->min_ping)
-					cl->min_ping = cl->ping;
-				else if (cl->ping > cl->max_ping)
-					cl->max_ping = cl->ping;
-			}
-
-			if (sv.framenum % 100 == 0)
-			{
-				cl->avg_ping_count++;
-				cl->avg_ping_time += cl->ping;
-			}
-
-			if (cl->state == cs_spawned && sv_lag_stats->intvalue)
-			{
-				if ((unsigned)((unsigned)sv.framenum - cl->pl_last_packet_frame) >= 55)
-				{
-					//randomize framenums used for pl testing to account for timed pl
-					cl->pl_last_packet_frame = (unsigned)sv.framenum - (unsigned)(random() * 5);
-					MSG_BeginWriting (svc_stufftext);
-					MSG_WriteString ("cmd \177p\n");
-					SV_AddMessage (cl, false);
-					cl->pl_sent_packets++;
-					cl->pl_dropped_packets++;
-				}
-			}
-		}
-		else if (sv_calcpings_method->intvalue == 2)
-		{
-			best = 9999;
-			for (j=0 ; j<LATENCY_COUNTS ; j++)
-			{
-				if (cl->frame_latency[j] > 0 && cl->frame_latency[j] < best)
-				{
-					best = cl->frame_latency[j];
-				}
-			}
-
-			cl->ping = best != 9999 ? best : 0;
-
-			if (cl->ping)
-			{
-				if (cl->ping < cl->min_ping)
-					cl->min_ping = cl->ping;
-				else if (cl->ping > cl->max_ping)
-					cl->max_ping = cl->ping;
-			}
-
-			if (sv.framenum % 100 == 0)
-			{
-				cl->avg_ping_count++;
-				cl->avg_ping_time += cl->ping;
-			}
-
-			if (cl->state == cs_spawned && sv_lag_stats->intvalue)
-			{
-				if ((unsigned)((unsigned)sv.framenum - cl->pl_last_packet_frame) >= 55)
-				{
-					//randomize framenums used for pl testing to account for timed pl
-					cl->pl_last_packet_frame = (unsigned)sv.framenum - (unsigned)(random() * 5);
-					MSG_BeginWriting (svc_stufftext);
-					MSG_WriteString ("cmd \177p\n");
-					SV_AddMessage (cl, false);
-					cl->pl_sent_packets++;
-					cl->pl_dropped_packets++;
-				}
-			}
-		}
-		else
-		{
-			cl->ping = 0;
-		}
-
-		// let the game dll know about the ping
-		cl->edict->client->ping = cl->ping;
-	}
-}
-
 
 /*
 ===================
@@ -2298,6 +2546,32 @@ static void SV_GiveMsec (void)
 
 		if (cl->state == cs_spawned)
 		{
+#if KINGPIN // MH: doing things a bit differently here (could be applied to Q2 too?)
+			if (cl->initialRealTime)
+			{
+				diff = cl->totalMsecUsed - (curtime - cl->initialRealTime);
+				cl->commandMsecOverflowCount += diff / 1000.f; // tracking the overflow in seconds
+				cl->commandMsecOverflowCount *= 0.96f; // allow 4% leeway
+				if (cl->commandMsecOverflowCount < 0)
+					cl->commandMsecOverflowCount = 0; // no accumulated time allowance
+
+				if (abs(diff) > 100)
+					Com_DPrintf ("%s has diff %d (%d %d) %.3f\n", cl->name, diff, cl->totalMsecUsed, (curtime - cl->initialRealTime), cl->commandMsecOverflowCount);
+
+#if KINGPIN
+				if (sv_enforcetime->intvalue && sv_enforcetime_kick->value && cl->commandMsecOverflowCount > sv_enforcetime_kick->value && !(cl->edict->svflags & SVF_NOCLIENT))
+#else
+				if (sv_enforcetime->intvalue && cl->commandMsecOverflowCount > sv_enforcetime->value && !(cl->edict->svflags & SVF_NOCLIENT))
+#endif
+				{
+					SV_KickClient (cl, "irregular timing (speed cheat?)", "You were kicked from the game for having irregular timing.\n");
+					continue;
+				}
+			}
+
+			cl->totalMsecUsed = 0;
+			cl->initialRealTime = (curtime - cl->netchan.last_received < 100 ? cl->netchan.last_received : curtime - 100); // allow up to 100ms more for next packet
+#else
 			//r1: better? speed cheat detection via use of msec underflows
 			if (cl->commandMsec < 0)
 			{
@@ -2412,7 +2686,7 @@ static void SV_GiveMsec (void)
 				cl->timeSkewTotal += diff - cl->timeSkewLastDiff;
 				cl->timeSkewSamples++;
 			}*/
-
+#endif
 			
 		}
 
@@ -2431,6 +2705,10 @@ static void SV_ReadPackets (void)
 	int			i, j;
 	client_t	*cl;
 	uint16		qport;
+
+#if KINGPIN
+	unsigned	last_received;
+#endif
 
 	//Com_Printf ("ReadPackets\n");
 	for (;;)
@@ -2501,6 +2779,10 @@ static void SV_ReadPackets (void)
 		
 		//MSG_ReadShort (&net_message);
 
+		// MH: make sure it's big enough
+		if (net_message.cursize < 10)
+			continue;
+
 		qport = *(uint16 *)(net_message_buffer + 8);
 
 		// check for packets from connected clients
@@ -2514,7 +2796,11 @@ static void SV_ReadPackets (void)
 				continue;
 
 			//qport shit
+#if KINGPIN
+			if (true)
+#else
 			if (cl->protocol == PROTOCOL_ORIGINAL)
+#endif
 			{
 				//compare short from original q2
 				if (cl->netchan.qport != qport)
@@ -2577,6 +2863,10 @@ static void SV_ReadPackets (void)
 			if (cl->notes & NOTE_OVERFLOWED)
 				continue;
 
+#if KINGPIN
+			last_received = (cl->netchan.countacks ? cl->netchan.last_received : 0);
+#endif
+
 			if (Netchan_Process(&cl->netchan, &net_message))
 			{	// this is a valid, sequenced packet, so process it
 				if (cl->state != cs_zombie)
@@ -2586,6 +2876,38 @@ static void SV_ReadPackets (void)
 					if (!(sv.demofile && sv.state == ss_demo))
 						SV_ExecuteClientMessage (cl);
 					cl->packetCount++;
+
+					// MH: check if unreliable layout message was received or lost
+					if (cl->layout_unreliable && cl->netchan.incoming_acknowledged >= cl->layout_unreliable)
+					{
+						if (cl->netchan.incoming_acknowledged > cl->layout_unreliable)
+							cl->layout[0] = 0; // lost so clear stored layout
+						cl->layout_unreliable = 0;
+					}
+
+#if KINGPIN
+					// MH: measure the connection's latency consistency (client->server)
+					if (last_received && !cl->netchan.dropped && cl->lastcmd.msec && cl->lastcmd.msec < 200)
+					{
+						int d = cl->netchan.last_received - last_received - cl->lastcmd.msec;
+						if (d >= -1)
+						{
+							d += (d >> 1) - 1;
+							if (d < 0)
+								d = 0;
+							if (d > 100)
+								d = 100;
+							if (d > cl->quality)
+								cl->quality += (d - cl->quality) * 0.075f;
+							else
+							{
+								cl->quality += (d - cl->quality) * 0.1f / (cl->fps > 30 ? cl->fps : 30);
+								if (cl->quality < 0.1)
+									cl->quality = 0;
+							}
+						}
+					}
+#endif
 
 					//r1: send a reply immediately if the client is connecting
 					if ((cl->state == cs_connected || cl->state == cs_spawning) && cl->msgListStart->next)
@@ -2604,6 +2926,82 @@ static void SV_ReadPackets (void)
 			continue;
 		*/
 	}
+
+#if KINGPIN
+	// MH: handle Gamespy status requests
+	for (;;)
+	{
+		j = NET_GetPacket(NS_SERVER_GS, &net_from, &net_message);
+		if (!j)
+			break;
+
+		if (sv_hidestatus->intvalue)
+			continue;
+
+		if (j == 1)
+		{
+			static int	qid = 0;
+			char		*s, buf[16384];
+			int			len;
+
+			if (CheckBlackholes())
+				continue;
+
+			MSG_BeginReading(&net_message);
+			s = MSG_ReadStringLine(&net_message);
+
+			Com_DPrintf ("GS Packet %s : %s\n", NET_AdrToString(&net_from), s);
+
+			// GamespyLite can handle large packets, so not bothering to split them here
+			qid++;
+			len = 0;
+
+			if (!strcmp(s, "\\status\\"))
+			{
+				int count;
+
+				RateSample (&svs.ratelimit_status);
+
+				if (RateLimited (&svs.ratelimit_status, sv_ratelimit_status->intvalue))
+				{
+					Com_DPrintf ("Dropped GS status request from %s\n", NET_AdrToString (&net_from));
+					continue;
+				}
+
+				for (count=i=0; i<maxclients->intvalue ;i++)
+					if (svs.clients[i].state >= cs_spawning)
+						count++;
+
+				len += Com_sprintf(buf + len, sizeof(buf) - len, "\\gamename\\kingpin\\gamever\\kpded " VERSION "\\location\\%s\\hostname\\%s\\hostport\\%d\\mapname\\%s\\gametype\\%s\\numplayers\\%d\\maxplayers\\%d\\gamemode\\openplaying%s",
+					Cvar_Get("location", "0", 0)->string, hostname->string, server_port, sv.name, Cvar_VariableString("gamename"), count, maxclients->intvalue - sv_reserved_slots->intvalue, StatusString());
+
+				if (!sv_hideplayers->intvalue)
+				{
+					for (count=i=0; i<maxclients->intvalue; i++)
+						if (svs.clients[i].state >= cs_spawning)
+						{
+							len += Com_sprintf(buf + len, sizeof(buf) - len, "\\player_%d\\%s\\frags_%d\\%d\\ping_%d\\%d\\deaths_%d\\%d",
+								count, svs.clients[i].name, count, svs.clients[i].edict->client->ps.stats[STAT_FRAGS], count, svs.clients[i].ping, count, svs.clients[i].edict->client->ps.stats[STAT_DEPOSITED]);
+							if (g_features->intvalue & GMF_CLIENTTEAM)
+								len += Com_sprintf(buf + len, sizeof(buf) - len, "\\team_%d\\%d", count, svs.clients[i].edict->client->team);
+							count++;
+							if (len > sizeof(buf) - 120)
+								break;
+						}
+				}
+			}
+			else
+			{
+				// ignoring any other requests
+				qid--;
+				continue;
+			}
+
+			len += Com_sprintf(buf + len, 32, "\\final\\\\queryid\\%u.1", qid);
+			NET_SendPacket(NS_SERVER_GS, len, buf, &net_from);
+		}
+	}
+#endif
 }
 
 /*
@@ -2625,21 +3023,13 @@ static void SV_CheckTimeouts (void)
 	client_t	*cl;
 	int			droppoint;
 	int			zombiepoint;
-	int			flagRun = 0;
-	static int	lastRun = 0;
+	int			clientcount = 0; // MH: count clients
+#if KINGPIN
+	int			dlrate = 0;
+#endif
 
 	droppoint = svs.realtime - 1000*timeout->intvalue;
 	zombiepoint = svs.realtime - 1000*zombietime->intvalue;
-
-	if (svs.realtime - lastRun > 5000)
-	{
-		lastRun = svs.realtime;
-		flagRun = 1;
-	}
-	else if (lastRun > svs.realtime)
-	{
-		lastRun = svs.realtime;
-	}
 
 	for (i=0,cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
 	{
@@ -2655,22 +3045,52 @@ static void SV_CheckTimeouts (void)
 			continue;
 		}
 
+		// MH: count clients
+		if (cl->state)
+			clientcount++;
+
 		if (cl->state >= cs_connected)
 		{
-			if (flagRun)
+			// MH: don't start counting FPS until they are in the game
+			if (!cl->lastfpscheck || cl->state != cs_spawned)
 			{
-				//r1: ignore first few seconds after level change
-				if (svs.realtime > 10000 && cl->state == cs_spawned)
-				{
-					cl->fps = (int)((float)cl->packetCount / 5.0);
-
-					//r1ch: fps spam protection
-					if (sv_fpsflood->intvalue && cl->fps > sv_fpsflood->intvalue)
-						SV_KickClient (cl, va("too many packets/sec (%d)", cl->fps), "You were kicked from the game.\n(Tip: try lowering your cl_maxfps to avoid flooding the server)\n");
-					else if (sv_minpps->intvalue && cl->lastmessage  > (svs.realtime - 500) && cl->fps < sv_minpps->intvalue)
-						SV_KickClient (cl, va ("not enough packets/sec (%d)", cl->fps), "You were kicked from the game for not sending sufficient player updates per second.\nTry increasing your cl_maxfps value.\n");
-				}
 				cl->packetCount = 0;
+				cl->lastfpscheck = curtime;
+			}
+			else if ((curtime - cl->lastfpscheck) >= 5000)
+			{
+				// MH: using the wall clock (instead of server time) for more accurate FPS measurement
+				cl->fps = (int)((float)cl->packetCount * 1000 / (int)(curtime - cl->lastfpscheck));
+
+				//r1ch: fps spam protection
+				// MH: modified to check/correct cl_maxfps before kicking if that fails to fix the problem
+				if (sv_fpsflood->intvalue && cl->fps > sv_fpsflood->intvalue)
+				{
+					if (!cl->cl_maxfps)
+					{
+						MSG_BeginWriting (svc_stufftext);
+						MSG_WriteString ("cmd \177c \177fps $cl_maxfps\n");
+						SV_AddMessage (cl, true);
+					}
+					else
+						SV_KickClient (cl, va("too many packets/sec (%d)", cl->fps), va("You were kicked from the game for sending more than %d packets per second.\n", sv_fpsflood->intvalue));
+				}
+				else if (sv_minpps->intvalue && cl->lastmessage > (svs.realtime - 500) && cl->fps < sv_minpps->intvalue)
+				{
+					if (!cl->cl_maxfps)
+					{
+						MSG_BeginWriting (svc_stufftext);
+						MSG_WriteString ("cmd \177c \177fps $cl_maxfps\n");
+						SV_AddMessage (cl, true);
+					}
+					else
+						SV_KickClient (cl, va ("not enough packets/sec (%d)", cl->fps), va("You were kicked from the game for sending fewer than %d packets per second.\n", sv_minpps->intvalue));
+				}
+				else
+					cl->cl_maxfps = 0;
+
+				cl->packetCount = 0;
+				cl->lastfpscheck = curtime;
 			}
 
 			if (cl->notes & NOTE_DROPME)
@@ -2694,12 +3114,27 @@ static void SV_CheckTimeouts (void)
 					cl->lastcmd.msec = old;
 				}
 
-
 				if (sv_idlekick->intvalue && cl->idletime >= sv_idlekick->intvalue * 10)
 				{
 					SV_KickClient (cl, "idling", "You have been disconnected due to inactivity.\n");
 					continue;
 				}
+
+				// MH: send name clash message
+				if ((cl->notes & NOTE_NAMECLASH) && cl->moved)
+				{
+					SV_ClientPrintf (cl, PRINT_HIGH, "Another player on the server is already using your name\nYou are now: %s\n", cl->name);
+					cl->notes &= ~NOTE_NAMECLASH;
+				}
+
+#if KINGPIN
+				// MH: send pending bad model message
+				if (cl->badmodel[0] && cl->moved)
+				{
+					SV_ClientPrintf(cl, PRINT_HIGH, "This server does not have the %s model\n", cl->badmodel);
+					cl->badmodel[0] = 0;
+				}
+#endif
 			}
 
 			if (cl->lastmessage < droppoint)
@@ -2714,8 +3149,37 @@ static void SV_CheckTimeouts (void)
 				//SV_CleanClient (cl);
 				//cl->state = cs_free;	// don't bother with zombie state
 			}
+
+#if KINGPIN
+			// MH: update download speed if bandwidth is limited
+			if (cl->download && sv_bandwidth->intvalue > 0)
+			{
+				int rate;
+				if (!dlrate)
+					dlrate = GetDownloadRate();
+				if (cl->patched)
+					rate = dlrate;
+				else
+					rate = dlrate > 200 ? 200 : dlrate;
+				if (cl->downloadrate != rate && (cl->patched || (cl->cl_maxfps && cl->cl_maxfps != -1)))
+				{
+					cl->downloadrate = rate;
+					MSG_BeginWriting (svc_stufftext);
+					MSG_WriteString (va(cl->patched ? "\177p dlr %d\n" : "set cl_maxfps %d\n", rate));
+					SV_AddMessage (cl, true);
+				}
+				// give download tokens
+				cl->downloadtokens += rate / 10.f;
+				if (cl->downloadtokens > rate)
+					cl->downloadtokens = (float)rate;
+			}
+#endif
 		}
 	}
+
+	// MH: activate auto-idle mode if there are no clients
+	if (sv_autoidle->intvalue && !g_idle->intvalue && !clientcount)
+		Cvar_ForceSet("g_idle", "1");
 }
 
 /*
@@ -2757,9 +3221,15 @@ static void SV_RunGameFrame (void)
 	// compression can get confused when a client
 	// has the "current" frame
 	sv.framenum++;
+#if KINGPIN
+	sv.time = sv.framenum * 100;
+#else
 	sv.time = sv.framenum * (1000 / sv_fps->intvalue);
+#endif
 
+#if !KINGPIN
 	sv_tracecount = 0;
+#endif
 
 	// don't run if paused
 	if (!sv_paused->intvalue || maxclients->intvalue > 1)
@@ -2777,7 +3247,8 @@ static void SV_RunGameFrame (void)
 		// never get more than one tic behind
 		if (sv.time < svs.realtime)
 		{
-			if (sv_showclamp->intvalue)
+			// MH: disable clamp warning when in idle mode
+			if (sv_showclamp->intvalue && !g_idle->intvalue)
 				Com_Printf ("sv highclamp: %u < %d = %d\n", LOG_SERVER, sv.time, svs.realtime, svs.realtime - sv.time);
 			svs.realtime = sv.time;
 		}
@@ -2810,14 +3281,22 @@ static void Master_Heartbeat (void)
 	if (!public_server->intvalue)
 		return;		// a private dedicated game
 
-	// check for time wraparound
-	if (svs.last_heartbeat > svs.realtime)
-		svs.last_heartbeat = svs.realtime;
-
-	if (svs.realtime - svs.last_heartbeat < HEARTBEAT_SECONDS*1000)
+	if (curtime - svs.last_heartbeat < HEARTBEAT_SECONDS*1000) // MH: using wall clock (not server time)
 		return;		// not time to send yet
 
-	svs.last_heartbeat = svs.realtime;
+	svs.last_heartbeat = curtime; // MH: using wall clock (not server time)
+
+	// MH: refresh global master server IP (if there are no connected clients)
+	if (sv_global_master->intvalue)
+	{
+		for (i=0 ; i<maxclients->intvalue ; i++)
+		{
+			if (svs.clients[i].state)
+				break;
+		}
+		if (i == maxclients->intvalue)
+			NET_StringToAdr (GLOBAL_MASTER, &master_adr[0]);
+	}
 
 	// send the same string that we would give for a status OOB command
 	string = SV_StatusString();
@@ -2828,6 +3307,17 @@ static void Master_Heartbeat (void)
 		if (master_adr[i].port)
 		{
 			Com_Printf ("Sending heartbeat to %s\n", LOG_SERVER|LOG_NOTICE, NET_AdrToString (&master_adr[i]));
+#if KINGPIN
+			// MH: send a Gamespy heartbeat
+			if (public_server->intvalue & 2)
+			{
+				char buf[64];
+				Com_sprintf(buf, sizeof(buf), "\\heartbeat\\%d\\gamename\\kingpin", server_port - 10);
+				NET_SendPacket (NS_SERVER_GS, strlen(buf), buf, &master_adr[i]);
+				if (!(public_server->intvalue & 1))
+					continue;
+			}
+#endif
 			Netchan_OutOfBandPrint (NS_SERVER, &master_adr[i], "heartbeat\n%s", string);
 		}
 	}
@@ -2875,6 +3365,30 @@ static void SV_RunPmoves (int msec)
 	}
 }
 
+// MH: minimize memory usage when the server is empty
+static void SV_MinimizeMemory (void)
+{
+	int			i;
+	client_t	*cl;
+
+	if (!sv_minimize_memory->intvalue || !svs.client_entities)
+		return;
+
+	for (i=0,cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
+	{
+		if (cl->state)
+			return;
+	}
+
+	Z_Free (svs.client_entities);
+	svs.client_entities = NULL;
+
+#if KINGPIN
+	// clear download cache
+	ClearCachedDownloads();
+#endif
+}
+
 /*
 ==================
 SV_Frame
@@ -2892,7 +3406,17 @@ void SV_Frame (int msec)
 	{
 		//DERP DERP only do this when not running a god damn client!!
 		if (dedicated->intvalue)
-			Sys_Sleep (1);
+		{
+#ifdef _WIN32
+			// MH: release mutex before sleeping
+			Sys_ReleaseConsoleMutex();
+#endif
+			Sys_Sleep (100); // MH: raised from 1ms
+#ifdef _WIN32
+			// MH: retake mutex
+			Sys_AcquireConsoleMutex();
+#endif
+		}
 		return;
 	}
 
@@ -2901,8 +3425,10 @@ void SV_Frame (int msec)
 	// keep the random time dependent
 	//rand ();
 
+#if !KINGPIN
 	if (sv_interpolated_pmove->intvalue)
 		SV_RunPmoves (msec);
+#endif
 
 	// get packets from clients
 	SV_ReadPackets ();
@@ -2911,15 +3437,25 @@ void SV_Frame (int msec)
 	if (!sv_timedemo->intvalue && svs.realtime < sv.time)
 	{
 		// never let the time get too far off
+#if KINGPIN
+		if (sv.time - svs.realtime > 100)
+#else
 		if (sv.time - svs.realtime > (1000 / sv_fps->intvalue))
+#endif
 		{
 			if (sv_showclamp->intvalue)
 				Com_Printf ("sv lowclamp: %u - %d = %d\n", LOG_SERVER, sv.time, svs.realtime, sv.time - svs.realtime);
+#if KINGPIN
+			svs.realtime = sv.time - 100;
+#else
 			svs.realtime = sv.time - (1000 / sv_fps->intvalue);
+#endif
 		}
 
+#if !KINGPIN
 		//r1: send extra packets now for player position updates
 		SV_SendPlayerUpdates (sv.time - svs.realtime);
+#endif
 
 		//r1: execute commands now
 		if (dedicated->intvalue)
@@ -2929,16 +3465,48 @@ void SV_Frame (int msec)
 				return;
 		}
 
-		//r1: although it doesn't look like we should be sleeping for so long if we
-		//want to send player updates, keep in mind if no packets are received then
-		//there is nothing to update anyway.
-		NET_Sleep (sv.time - svs.realtime);
+#ifdef _WIN32
+		// MH: release mutex before sleeping
+		Sys_ReleaseConsoleMutex();
+#endif
+
+		// MH: wait up to 1000ms when in idle mode for reduced CPU usage
+		if (g_idle->intvalue)
+			NET_Sleep (sv.time - svs.realtime + 900);
+		else
+			NET_Sleep (sv.time - svs.realtime);
+
+#ifdef _WIN32
+		// MH: retake mutex
+		Sys_AcquireConsoleMutex();
+#endif
+
 		return;
 	}
 
+	// MH: measure frame timing quality
+	if (!g_idle->intvalue && sv.framenum >= 10)
+	{
+		int d = ((svs.realtime - sv.time) << 1) - 1;
+		if (d < 0)
+			d = 0;
+		if (d > 100)
+			d = 100;
+		if (d > svs.timing)
+			svs.timing += (d - svs.timing) * 0.15f;
+		else
+		{
+			svs.timing += (d - svs.timing) * 0.003f;
+			if (svs.timing < 0.1)
+				svs.timing = 0;
+		}
+	}
+
+#if !KINGPIN
 	//force all moves to be current so that clients don't interpolate behind time
 	if (sv_interpolated_pmove->intvalue)
 		SV_RunPmoves (-1);
+#endif
 
 	//Com_Printf ("** game tick (%d drift)**\n", LOG_GENERAL, sv.time - svs.realtime);
 
@@ -2948,9 +3516,6 @@ void SV_Frame (int msec)
 	//may have executed some kind of quit
 	if (!svs.initialized)
 		return;
-
-	// update ping based on the last known frame from all clients
-	SV_CalcPings ();
 
 	// give the clients some timeslices
 	SV_GiveMsec ();
@@ -2976,6 +3541,9 @@ void SV_Frame (int msec)
 #ifdef ANTICHEAT
 	SV_AntiCheat_Run ();
 #endif
+
+	// MH: minimize memory usage
+	SV_MinimizeMemory ();
 
 	//have to check this here for possible listen servers loading DLLs and stuff
 	//during server execution
@@ -3030,9 +3598,9 @@ void UserinfoBanDrop (const char *key, const banmatch_t *ban, const char *result
 		SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", ban->message);
 
 	if (ban->blockmethod == CVARBAN_BLACKHOLE)
-		Blackhole (&sv_client->netchan.remote_address, true, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "userinfovarban: %s == %s", key, result);
+		Blackhole (&sv_client->netchan.remote_address, true, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "userinfo: %s = %s", key, result);
 
-	Com_Printf ("Dropped client %s, userinfoban: %s == %s\n", LOG_SERVER|LOG_DROP, sv_client->name, key, result);
+	Com_Printf ("Dropped client %s, banned userinfo: %s = %s\n", LOG_SERVER|LOG_DROP, sv_client->name, key, result);
 
 	SV_DropClient (sv_client, (ban->blockmethod != CVARBAN_BLACKHOLE));
 }
@@ -3056,7 +3624,7 @@ qboolean SV_UserInfoBanned (client_t *cl)
 				SV_AddMessage (cl, true);
 				break;
 			case CVARBAN_LOGONLY:
-				Com_Printf ("LOG: %s[%s] matched userinfoban: %s == %s\n", LOG_SERVER, cl->name, NET_AdrToString (&cl->netchan.remote_address), key, Info_ValueForKey (cl->userinfo, key));
+				Com_Printf ("LOG: %s[%s] userinfo check: %s = %s\n", LOG_SERVER, cl->name, NET_AdrToString (&cl->netchan.remote_address), key, Info_ValueForKey (cl->userinfo, key));
 				break;
 			case CVARBAN_EXEC:
 				Cbuf_AddText (match->message);
@@ -3138,7 +3706,11 @@ void SV_UserinfoChanged (client_t *cl)
 	val = Info_ValueForKey (cl->userinfo, "name");
 
 	//they tried to set name to something bad
+#if KINGPIN
+	if (!val[0] || StringIsWhitespace(val))
+#else
 	if (!val[0] || NameColorFilterCheck (val) || StringIsWhitespace(val))
+#endif
 	{
 		Com_Printf ("WARNING: Invalid name change to '%s' from %s[%s].\n", LOG_SERVER|LOG_WARNING, MakePrintable(val, 0), cl->name, NET_AdrToString(&cl->netchan.remote_address)); 
 		SV_ClientPrintf (cl, PRINT_HIGH, "Invalid name '%s'\n", val);
@@ -3178,7 +3750,11 @@ static void SV_UpdateWindowTitle (cvar_t *cvar, char *old, char *newvalue)
 	if (dedicated->intvalue)
 	{
 		char buff[512];
+#if KINGPIN
+		Com_sprintf (buff, sizeof(buff), "%s - kpded " VERSION " (port %d)", newvalue, server_port);
+#else
 		Com_sprintf (buff, sizeof(buff), "%s - R1Q2 " VERSION " (port %d)", newvalue, server_port);
+#endif
 
 		//for win32 this will set window titlebar text
 		//for linux this currently does nothing
@@ -3215,6 +3791,33 @@ static void _expand_cvar_newlines (cvar_t *var, char *o, char *n)
 
 #endif
 
+// MH: check that idle mode can be enabled
+static void _g_idle_changed (cvar_t *var, char *oldvalue, char *newvalue)
+{
+	if (var->intvalue)
+	{
+		int i;
+		client_t *cl;
+
+		if (!dedicated->intvalue)
+		{
+			// idle mode is only available on a dedicated server
+			Cvar_ForceSet (var->name, "0");
+			return;
+		}
+
+		for (i=0,cl=svs.clients; i < maxclients->intvalue; i++,cl++)
+		{
+			if (cl->state >= cs_connected)
+			{
+				// disable idle mode if there are players
+				Cvar_ForceSet (var->name, "0");
+				return;
+			}
+		}
+	}
+}
+
 /*
 ===============
 SV_Init
@@ -3236,16 +3839,31 @@ void SV_Init (void)
 	//r1: default 1
 	Cvar_Get ("deathmatch", "1", CVAR_LATCH);
 	Cvar_Get ("coop", "0", CVAR_LATCH);
+#if KINGPIN
+	Cvar_Get ("dmflags", "784", CVAR_SERVERINFO | CVAR_ARCHIVE);
+#else
 	Cvar_Get ("dmflags", va("%i", DF_INSTANT_ITEMS), CVAR_SERVERINFO);
+#endif
 	Cvar_Get ("fraglimit", "0", CVAR_SERVERINFO);
 	Cvar_Get ("timelimit", "0", CVAR_SERVERINFO);
+#if KINGPIN
+//	Cvar_Get ("cashlimit", "0", CVAR_SERVERINFO);
+#endif
 	Cvar_Get ("cheats", "0", CVAR_SERVERINFO|CVAR_LATCH);
+#if KINGPIN
+	Cvar_Get ("protocol", va("%i", PROTOCOL_ORIGINAL), CVAR_SERVERINFO | CVAR_NOSET);
+#else
 	Cvar_Get ("protocol", va("%i", PROTOCOL_R1Q2), CVAR_NOSET);
+#endif
 
 	//r1: default 8
 	maxclients = Cvar_Get ("maxclients", "8", CVAR_SERVERINFO | CVAR_LATCH);
 
+#if KINGPIN
+	hostname = Cvar_Get ("hostname", "noname", CVAR_SERVERINFO | CVAR_ARCHIVE);
+#else
 	hostname = Cvar_Get ("hostname", "Unnamed R1Q2 Server", CVAR_SERVERINFO | CVAR_ARCHIVE);
+#endif
 
 	//r1: update window title on the fly
 	hostname->changed = SV_UpdateWindowTitle;
@@ -3266,25 +3884,47 @@ void SV_Init (void)
 
 	//r1: default 1
 	sv_enforcetime = Cvar_Get ("sv_enforcetime", "1", 0);
+#if KINGPIN
+	sv_enforcetime->help = "Enforce time movements to prevent speed hacking. Default 1.\n0: Disabled\n1: Enabled, prevent excess movement (and kick depending on sv_enforcetime_kick)\n";
+	// MH: a separate kick option is needed for Kingpin because most mods reset sv_enforcetime to 1
+	sv_enforcetime_kick = Cvar_Get ("sv_enforcetime_kick", "0", 0);
+	sv_enforcetime_kick->help = "Kick clients that exceed this many seconds of time offset. Default 0.\n0: Disabled\n1+: Enabled (increase value to reduce false positives)\n";
+#else
 	sv_enforcetime->help = "Enforce time movements to prevent speed hacking. Default 1.\n0: Disabled\n1: Enabled, prevent excess movement\n2+: Enabled, kick on excessive movement (increase value to reduce false positives from lag)\n";
+#endif
 
 #ifndef NO_SERVER
+#if KINGPIN
+	allow_download = Cvar_Get ("allow_download", "1", CVAR_ARCHIVE);
+#else
 	allow_download = Cvar_Get ("allow_download", "0", CVAR_ARCHIVE);
+#endif
 	allow_download_players  = Cvar_Get ("allow_download_players", "1", CVAR_ARCHIVE);
 	allow_download_models = Cvar_Get ("allow_download_models", "1", CVAR_ARCHIVE);
 	allow_download_sounds = Cvar_Get ("allow_download_sounds", "1", CVAR_ARCHIVE);
 	allow_download_maps	  = Cvar_Get ("allow_download_maps", "1", CVAR_ARCHIVE);
 	allow_download_pics	  = Cvar_Get ("allow_download_pics", "1", CVAR_ARCHIVE);
+#if KINGPIN
+	allow_download_paks = Cvar_Get ("allow_download_paks", "1", 0);
+	allow_download_paks->help = "Allow downloading of PAK files in the game directory (not main). Default 1.\n";
+#else
 	allow_download_textures = Cvar_Get ("allow_download_textures", "1", 0);
 	allow_download_others = Cvar_Get ("allow_download_others", "0", 0);
+#endif
 #endif
 
 	sv_noreload = Cvar_Get ("sv_noreload", "0", 0);
 
+#if !KINGPIN
 	sv_airaccelerate = Cvar_Get("sv_airaccelerate", "0", CVAR_LATCH);
+#endif
 
 	public_server = Cvar_Get ("public", "1", 0);
-	public_server->help = "If set, sends information about this server to master servers which will cause the server to be shown in server browsers. See also 'setmaster' command. Default 0.\n";
+#if KINGPIN
+	public_server->help = "Send information about this server to master servers, which will cause the server to be shown in server browsers. See also 'setmaster' command. Default 1.\n0: Disabled\n1: Enable standard heartbeats\n2: Enable Gamespy heartbeats\n3: Enable both heartbeats\n";
+#else
+	public_server->help = "If set, sends information about this server to master servers which will cause the server to be shown in server browsers. See also 'setmaster' command. Default 1.\n";
+#endif
 
 	//r1: not needed
 	//sv_reconnect_limit = Cvar_Get ("sv_reconnect_limit", "3", CVAR_ARCHIVE);
@@ -3307,13 +3947,20 @@ void SV_Init (void)
 
 	//r1: server-side password protection (why id put this into the game dll
 	//    i will never figure out)
+#if KINGPIN
+	// MH: using the traditional "password" setting (no point having 2 password settings)
+	sv_password = Cvar_Get ("password", "", 0);
+#else
 	sv_password = Cvar_Get ("sv_password", "", 0);
 	sv_password->changed = _password_changed;
+#endif
 	sv_password->help = "Password required to connect to the server. Default empty.\n";
 
+#if !KINGPIN
 	//r1: text filtering: 1 = strip low bits, 2 = low+hi
 	sv_filter_q3names = Cvar_Get ("sv_filter_q3names", "0", 0);
 	sv_filter_q3names->help = "Disallow names that use Quake III style coloring. Default 0.\n";
+#endif
 
 	sv_filter_userinfo = Cvar_Get ("sv_filter_userinfo", "0", 0);
 	sv_filter_userinfo->help = "Filter client userinfo. Default 0.\n0: No filtering\n1: Strip low ASCII values.\n2: Strip low+high ASCII values.\n";
@@ -3326,13 +3973,20 @@ void SV_Init (void)
 	sv_blackholes->help = "Allow automatic blackholing (IP blocking) by various features. Default 1.\n";
 
 	//r1: allow clients to use cl_nodelta (increases server bw usage)
+#if KINGPIN
+	sv_allownodelta = Cvar_Get ("sv_allownodelta", "0", 0);
+	sv_allownodelta->help = "Allow clients to use cl_nodelta (disables delta state). Not using delta state results in much greater bandwidth usage. Default 0.\n";
+#else
 	sv_allownodelta = Cvar_Get ("sv_allownodelta", "1", 0);
 	sv_allownodelta->help = "Allow clients to use cl_nodelta (disables delta state). Not using delta state results in much greater bandwidth usage. Default 1.\n";
+#endif
 
+#if !KINGPIN
 	//r1: option to block q2ace due to hacked versions
 	sv_deny_q2ace = Cvar_Get ("sv_deny_q2ace", "0", 0);
 	if (sv_deny_q2ace->intvalue)
 		Com_Printf ("WARNING: sv_deny_q2ace is deprecated and will be removed in a future build.\n", LOG_SERVER|LOG_WARNING);
+#endif
 
 	//r1: limit connections per ip address (stop zombie dos/flood)
 	sv_iplimit = Cvar_Get ("sv_iplimit", "3", 0);
@@ -3350,13 +4004,20 @@ void SV_Init (void)
 	sv_nc_clientsonly = Cvar_Get ("sv_nc_clientsonly", "1", 0);
 	sv_nc_clientsonly->help = "Only apply sv_nc_visibilitycheck checking to other players. Default 1.\n";
 
+#if !KINGPIN
 	//r1: http dl server
 	sv_downloadserver = Cvar_Get ("sv_downloadserver", "", 0);
 	sv_downloadserver->help = "URL to a location where clients can download game content over HTTP. Default empty.\n";
+#endif
 
 	//r1: max allowed file size for autodownloading (bytes)
+#if KINGPIN
+	sv_max_download_size = Cvar_Get ("sv_max_download_size", "0", 0);
+	sv_max_download_size->help = "Maximum file size in bytes that a client may attempt to auto download. Default 0 (no limit).\n";
+#else
 	sv_max_download_size = Cvar_Get ("sv_max_download_size", "8388608", 0);
 	sv_max_download_size->help = "Maximum file size in bytes that a client may attempt to auto download. Default 8388608 (8MB).\n";
+#endif
 
 	//r1: max backup packets to allow from lagged clients (id.default=20)
 	sv_max_netdrop = Cvar_Get ("sv_max_netdrop", "20", 0);
@@ -3371,8 +4032,13 @@ void SV_Init (void)
 	sv_hideplayers->help = "Hide information about who is playing from server browsers. Default 0.\n";
 
 	//r1: kick high fps users flooding packets
+	// MH: modified to check cl_maxfps before kicking
+#if KINGPIN
+	sv_fpsflood = Cvar_Get ("sv_maxpps", "0", 0);
+#else
 	sv_fpsflood = Cvar_Get ("sv_fpsflood", "0", 0);
-	sv_fpsflood->help = "Kick users who send more than this many packets/sec (packet rate is usually tied to FPS on old clients). 0 means no limit. Default 0.\n";
+#endif
+	sv_fpsflood->help = "Limit users to sending this many packets/sec (tied to the client's cl_maxfps cvar) and kick if they persistently exceed it. 0 means no limit. Default 0.\n";
 
 	//r1: randomize starting framenum to thwart map timers
 	sv_randomframe = Cvar_Get ("sv_randomframe", "0", 0);
@@ -3382,6 +4048,7 @@ void SV_Init (void)
 	sv_msecs = Cvar_Get ("sv_msecs", "1800", 0);
 	sv_msecs->help = "Milliseconds of movement to allow per client per 16 frames. You shouldn't need to change this unless you know why. Default 1800.\n";
 
+#if !KINGPIN
 	//r1: nocheat parser shit
 	sv_nc_kick = Cvar_Get ("sv_nc_kick", "0", 0);
 	if (sv_nc_kick->intvalue)
@@ -3394,6 +4061,7 @@ void SV_Init (void)
 	sv_filter_nocheat_spam = Cvar_Get ("sv_filter_nocheat_spam", "0", 0);
 	if (sv_filter_nocheat_spam->intvalue)
 		Com_Printf ("WARNING: sv_filter_nocheat_spam is deprecated and will be removed in a future build.\n", LOG_SERVER|LOG_WARNING);
+#endif
 
 	//r1: crash on game errors with int3
 	sv_gamedebug = Cvar_Get ("sv_gamedebug", "0", 0);
@@ -3401,15 +4069,17 @@ void SV_Init (void)
 
 	//r1: reload game dll on next map change (resets to 0 after)
 	sv_recycle = Cvar_Get ("sv_recycle", "0", 0);
-	sv_recycle->help = "Reload the Game DLL on the next map load. For mod developers only. Default 0.\n";
+	sv_recycle->help = "Reload the Game DLL on the next map load. Default 0.\n"; // MH: removed "For mod developers only"
 
 	//r1: track server uptime in serverinfo?
 	sv_uptime = Cvar_Get ("sv_uptime", "0", 0);
 	sv_uptime->help = "Display the server uptime statistics in the info response shown to server browsers. Default 0.\n";
 
+#if !KINGPIN
 	//r1: allow strafe jumping at high fps values (Requires hacked client (!!!))
 	sv_strafejump_hack = Cvar_Get ("sv_strafejump_hack", "1", CVAR_LATCH);
 	sv_strafejump_hack->help = "Allow strafe jumping at any FPS value. Default 0.\n0: Standard Q2 strafe jumping allowed\n1: Allow compatible clients to strafe jump at any FPS\n2: Allow all clients to strafe jump at any FPS (causes prediction errors on non-compatible clients)\n";
+#endif
 
 	//r1: reserved slots (set 'rp' userinfo)
 	sv_reserved_password = Cvar_Get ("sv_reserved_password", "", 0);
@@ -3419,8 +4089,13 @@ void SV_Init (void)
 	sv_reserved_slots->help = "Number of reserved player slots. Default 0.\n";
 
 	//r1: allow use of 'map' command after game dll is loaded?
+#if KINGPIN
+	sv_allow_map = Cvar_Get ("sv_allow_map", "1", 0);
+	sv_allow_map->help = "Allow use of the 'map' command to change levels. The 'gamemap' command should be used to change levels as 'map' will force the Game DLL to unload and reload, losing any internal state. Default 1.\n";
+#else
 	sv_allow_map = Cvar_Get ("sv_allow_map", "0", 0);
-	sv_allow_map->help = "Allow use of the 'map' command to change levels. The gamemap command should be used to change levels as 'map' will force the Game DLL to unload and reload, losing any internal state. Default 0.\n";
+	sv_allow_map->help = "Allow use of the 'map' command to change levels. The 'gamemap' command should be used to change levels as 'map' will force the Game DLL to unload and reload, losing any internal state. Default 0.\n";
+#endif
 
 	//r1: allow unconnected clients to execute game commands (default enabled in id!)
 	sv_allow_unconnected_cmds = Cvar_Get ("sv_allow_unconnected_cmds", "0", 0);
@@ -3430,9 +4105,11 @@ void SV_Init (void)
 	sv_strict_userinfo_check = Cvar_Get ("sv_strict_userinfo_check", "1", 0);
 	sv_strict_userinfo_check->help = "Force client userinfo to conform to the userinfo specifications. This will prevent colored names amongst other things. Default 1.\n";
 
+#if !KINGPIN
 	//r1: method to calculate pings. 0 = disable entirely, 1 = average, 2 = min
 	sv_calcpings_method = Cvar_Get ("sv_calcpings_method", "1", 0);
 	sv_calcpings_method->help = "Method used to calculate displayed pings. Default 1.\n0: Disable ping calculations completely\n1: Average of packets (default Q2 method)\n2: Best of packets (increased accuracy under normal network conditions)\n";
+#endif
 
 	//r1: disallow mod to set serverinfo via Cvar_Get?
 	sv_no_game_serverinfo = Cvar_Get ("sv_no_game_serverinfo", "0", 0);
@@ -3445,31 +4122,41 @@ void SV_Init (void)
 	sv_mapdownload_ok_message = Cvar_Get ("sv_mapdownload_ok_message", "", 0);
 	sv_mapdownload_ok_message->help = "Message to send to clients when they commence a map download. Default empty.\n";
 
+#if !KINGPIN
 	//r1: failsafe against buggy traces
 	sv_max_traces_per_frame = Cvar_Get ("sv_max_traces_per_frame", "10000", 0);
 	sv_max_traces_per_frame->help = "Maximum amount of path traces permitted by the Game DLL per frame (100ms). Some mods get into infinite trace loops so this counter is a protection against that. Default 10000.\n";
+#endif
 
 	//r1: rate limiting for status requests to prevent udp spoof DoS
 	sv_ratelimit_status = Cvar_Get ("sv_ratelimit_status", "15", 0);
 	sv_ratelimit_status->help = "Maximum number of status requests to reply to per second.\n";
 
+#if !KINGPIN
 	//r1: allow new SVF_ ent flags? some mods mistakenly extend SVF_ for their own purposes.
 	sv_new_entflags = Cvar_Get ("sv_new_entflags", "0", 0);
 	sv_new_entflags->help = "Allow use of new R1Q2-specific server entity flags. Only enable this if instructed to do so by the mod you are running. Default 0.\n";
+#endif
 
 	//r1: validate playerskins passed to us by the mod? if not, we could end up sending
 	//illegal names (eg "name\hack/$$") which the client would issue as "download hack/$$"
 	//resulting in a command expansion attack.
 	sv_validate_playerskins = Cvar_Get ("sv_validate_playerskins", "1", 0);
+#if KINGPIN
+	sv_validate_playerskins->help = "Perform strict checks on playerskins passed to the engine by the mod. When enabled, this ensures all skins are in the form model/skin. Default 1.\n";
+#else
 	sv_validate_playerskins->help = "Perform strict checks on playerskins passed to the engine by the mod. Some (almost all) mods do not validate skin names from the client and malformed skins can cause problems if broadcast to other clients. When enabled, this ensures all skins are in the form model/skin. Default 1.\n";
+#endif
 
 	//r1: seconds before idle kick
 	sv_idlekick = Cvar_Get ("sv_idlekick", "0", 0);
 	sv_idlekick->help = "Seconds before kicking idle players. 0 means no limit.\n";
 
+#if !KINGPIN
 	//r1: cut off packetentities if they get too large?
 	sv_packetentities_hack = Cvar_Get ("sv_packetentities_hack", "0", 0);
 	sv_packetentities_hack->help = "Help to avoid SZ_Getspace: overflow and 'freezing' effects on the client by only sending partial amounts of packetentities. This will break delta state and may cause odd effects on the client. Default 0.\n0: Disabled\n1: Enabled, single pass (no attempt at compressing for protocol 35)\n2: Enabled, two pass (attempts to compress for protocol 35 clients)\n";
+#endif
 
 	//r1: don't send ents that are marked !inuse?
 	sv_entity_inuse_hack = Cvar_Get ("sv_entity_inuse_hack", "0", 0);
@@ -3513,9 +4200,23 @@ void SV_Init (void)
 	sv_show_name_changes = Cvar_Get ("sv_show_name_changes", "0", 0);
 	sv_show_name_changes->help = "Broadcast player name changes to all players on the server. Default 0.\n";
 
+	// MH: log connecting client userinfo
+	sv_log_connectinfo = Cvar_Get ("sv_log_connectinfo", "0", 0);
+	sv_log_connectinfo->help = "Log connecting client userinfo. Default 0.\n";
+
+	// MH: handle name clashes?
+	sv_unique_names = Cvar_Get ("sv_unique_names", "1", 0);
+	sv_unique_names->help = "Modify the name (append a number) of a player that tries to use the same name as another player on the server. Default 1.\n";
+
+	// MH: broadcast connecting players?
+	sv_show_connections = Cvar_Get ("sv_show_connections", "0", 0);
+	sv_show_connections->help = "Broadcast connecting players to all players on the server. Default 0.\n";
+
+#if !KINGPIN
 	//r1: delta optimz (small non-r1q2 client breakage on 2)
 	sv_optimize_deltas = Cvar_Get ("sv_optimize_deltas", "1", 0);
 	sv_optimize_deltas->help = "Optimize network bandwidth by not sending the view angles back to the client.\n0: Disabled\n1: Enabled for protocol 35 clients\n2: Enabled for all clients\n";
+#endif
 
 	//r1: enhanced setplayer code?
 	sv_enhanced_setplayer = Cvar_Get ("sv_enhanced_setplayer", "0", 0);
@@ -3528,23 +4229,28 @@ void SV_Init (void)
 	sv_format_string_hack = Cvar_Get ("sv_format_string_hack", "0", 0);
 	sv_format_string_hack->help = "Remove %% from user-supplied strings to mitigate format string vulnerabilities in the Game DLL. Default 0.\n";
 
-	sv_lag_stats = Cvar_Get ("sv_lag_stats", "0", 0);
-	sv_lag_stats->help = "Generate lag statistics for clients. This will cause an extra few bytes of data per client every second, used to generate the packetloss statistics for the 'lag' command. Default 0.\n";
-
+#if !KINGPIN
 	sv_func_plat_hack = Cvar_Get ("sv_func_entities_hack", "0", 0);
 	sv_func_plat_hack->help = "Use an ugly hack to change global sounds from moving func_plat (lifts) and func_door (doors) into local sounds for those near the entity only. Will also move func_plat sounds to the top of the platform. Default 0.\n";
+#endif
 
-	sv_max_packetdup = Cvar_Get ("sv_max_packetdup", "0", 0);
-	sv_max_packetdup->help = "Maximum number of duplicate packets a client can request. Each duplicate causes the client to consume more bandwidth, Default 0.\n";
+	sv_max_packetdup = Cvar_Get ("sv_max_packetdup", "1", 0); // MH: changed default from 0 to 1
+	sv_max_packetdup->help = "Maximum number of duplicate packets a client can request for when they have packet loss. Each duplicate causes the client to consume more bandwidth. Default 1.\n";
+
+	// MH: default packetdup
+	sv_packetdup = Cvar_Get ("sv_packetdup", "0", 0);
+	sv_packetdup->help = "Default number of duplicate packets sent to a client suffering packet loss, if they have rate set to at least 15000. Default 0.\n";
 
 	sv_redirect_address = Cvar_Get ("sv_redirect_address", "", 0);
 	sv_redirect_address->help = "Address to redirect clients to if the server is full. Can be a hostname or IP. Default empty.\n";
 
+#if !KINGPIN
 	sv_fps = Cvar_Get ("sv_fps", "10", CVAR_LATCH);
 	sv_fps->help = "FPS to run server at. Do not touch unless you know what you're doing. Default 10.\n";
 
 	sv_max_player_updates = Cvar_Get ("sv_max_player_updates", "2", 0);
 	sv_max_player_updates->help = "Maximum number of extra player updates to send in between game frames. Default 2.\n";
+#endif
 
 	sv_minpps = Cvar_Get ("sv_minpps", "0", 0);
 	sv_minpps->help = "Minimum number of packets/sec a client is required to send before they are kicked. Default 0.\n";
@@ -3552,12 +4258,19 @@ void SV_Init (void)
 	sv_disconnect_hack = Cvar_Get ("sv_disconnect_hack", "1", 0);
 	sv_disconnect_hack->help = "Turn svc_disconnect and stuffcmd disconnect into a proper disconnect for buggy mods. Default 1.\n";
 
+#if !KINGPIN
 	sv_interpolated_pmove = Cvar_Get ("sv_interpolated_pmove", "0", 0);
 	sv_interpolated_pmove->help = "Interpolate player movements server-side that have a duration of this value or higher to help compensate for low packet rates. Be sure you fully understand how it works before enabling; see the R1Q2 readme. Default 0.\n";
+#endif
 
 	sv_global_master = Cvar_Get ("sv_global_master", "1", 0);
+#if KINGPIN
+	sv_global_master->help = "Report to the master server at kingpin.info. Default 1.\n";
+#else
 	sv_global_master->help = "Report to the global Q2 master at q2servers.com. Default 1.\n";
+#endif
 
+#if !KINGPIN
 	sv_cheaternet = Cvar_Get ("sv_cheaternet", "60", 0);
 	sv_cheaternet->help = "Lookup connecting players in the CheaterNet database and if an infraction was round less than <value> minutes ago, perform sv_cheaternet_action. See the server admin guide for more details. Default 60.\n";
 
@@ -3578,12 +4291,55 @@ void SV_Init (void)
 
 	sv_timescale_skew_kick = Cvar_Get ("sv_timescale_skew_kick", "0", 0);
 	sv_timescale_skew_kick->help = "Kick clients that exhibit sudden time skew exeeding this many milliseconds. Default 0.\n";
+#endif
 
+#if KINGPIN
+	sv_features = Cvar_Get ("sv_features", va("%d", GMF_CLIENTPOV | GMF_WANT_ALL_DISCONNECTS | GMF_CLIENTTEAM | GMF_CLIENTNOENTS), CVAR_NOSET);
+#else
 	sv_features = Cvar_Get ("sv_features", va("%d", GMF_CLIENTNUM | GMF_WANT_ALL_DISCONNECTS | GMF_PROPERINUSE), CVAR_NOSET);
+#endif
 	sv_features->help = "Read-only bitmask of extended server features for the Game DLL. Do not modify.\n";
 
 	g_features = Cvar_Get ("g_features", "0", CVAR_NOSET);
 	g_features->help = "Read-only bitmask of extended game features for the server. Do not modify.\n";
+
+	// MH: disable fov zooming
+	sv_no_zoom = Cvar_Get ("sv_no_zoom", "0", 0);
+	sv_no_zoom->help = "Disable zooming-in by setting fov below 90. Default 0.\n";
+
+	// MH: idle mode that uses up to 1000ms frames for reduced CPU usage (only when a dedicated server is empty)
+	g_idle = Cvar_Get ("g_idle", "0", CVAR_NOSET);
+	g_idle->changed = _g_idle_changed;
+
+	// MH: automatically enable idle mode when the server is empty
+	sv_autoidle = Cvar_Get ("sv_autoidle", "0", 0);
+	sv_autoidle->help = "Automatically enable idle mode when the server is empty. Default 0.\n";
+
+	// MH: minimize memory usage option
+	sv_minimize_memory = Cvar_Get ("sv_minimize_memory", "0", 0);
+	sv_minimize_memory->help = "Minimize memory usage when the server is empty. Default 0.\n";
+
+#if KINGPIN
+	// MH: allow models that are not on the server
+	sv_allow_any_model = Cvar_Get ("sv_allow_any_model", "0", 0);
+	sv_allow_any_model->help = "Allow players to use models that the server does not have. Default 0.\n";
+
+	// MH: compression level
+	sv_compress = Cvar_Get ("sv_compress", "1", 0);
+	sv_compress->help = "Compression level to use when sending compressed game state data to patched clients. Default 1.\n0: Disabled\n1-9: Lowest/fastest to Highest/slowest\n";
+
+	// MH: compression level for downloads
+	sv_compress_downloads = Cvar_Get ("sv_compress_downloads", "1", 0);
+	sv_compress_downloads->help = "Compression level to use when sending compressed files to patched clients. Default 1.\n0: Disabled\n1-9: Lowest/fastest to Highest/slowest\n";
+
+	// MH: pre-cache downloads to the system file cache
+	sv_download_precache = Cvar_Get ("sv_download_precache", "0", 0);
+	sv_download_precache->help = "Pre-cache downloads to the system file cache before sending them to avoid I/O delays. Default 0.\n";
+
+	// MH: upstream bandwidth available
+	sv_bandwidth = Cvar_Get ("sv_bandwidth", "0", 0);
+	sv_bandwidth->help = "The upstream bandwidth available in KB/s. This determines how fast downloads can be. Default 0 (no limit).\n";
+#endif
 
 #ifdef ANTICHEAT
 	sv_require_anticheat = Cvar_Get ("sv_anticheat_required", "0", CVAR_LATCH);
@@ -3642,8 +4398,10 @@ void SV_Init (void)
 	sv_anticheat_force_protocol35->help = "Force anticheat clients to connect using protocol 35. This may help prevent old hacks from working. Default 0.\n";
 #endif
 
+#if !KINGPIN
 	//server-private token to prevent spoofed cheaternet responses
 	do cheaternet_token = randomMT(); while (!cheaternet_token);
+#endif
 
 	//r1: init pyroadmin
 #ifdef USE_PYROADMIN
@@ -3740,7 +4498,17 @@ void SV_Shutdown (char *finalmsg, qboolean reconnect, qboolean crashing)
 
 	// free server static data
 	if (svs.clients)
+	{
+		// MH: free additional client data
+		int i;
+		for (i=0; i<maxclients->intvalue; i++)
+		{
+			if (svs.clients[i].state)
+				SV_CleanClient(svs.clients + i);
+		}
+
 		Z_Free (svs.clients);
+	}
 
 	if (svs.client_entities)
 		Z_Free (svs.client_entities);

@@ -24,7 +24,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef NDEBUG
 	#include "../build.h"
+#if KINGPIN
+	#define	VERSION		KPBUILD
+#else
 	#define	VERSION		"b"BUILD
+#endif
 #else
 	#define BUILD "DEBUG BUILD"
 	#define	VERSION		BUILD
@@ -32,7 +36,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "../game/q_shared.h"
 
+#if KINGPIN
+#define	BASEDIRNAME	"main"
+#else
 #define	BASEDIRNAME	"baseq2"
+#endif
 
 #ifdef _WIN32
 	#ifdef _WIN64
@@ -133,7 +141,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define PRODUCTNAMELOWER "r1q2 (mod)"
 #endif
 
+#if KINGPIN
+#define R1Q2_VERSION_STRING "kpded " VERSION " " CPUSTRING " " __DATE__ " " BUILDSTRING
+#else
 #define R1Q2_VERSION_STRING "R1Q2 " VERSION " " CPUSTRING " " __DATE__ " " BUILDSTRING
+#endif
 
 //============================================================================
 
@@ -223,7 +235,11 @@ void SZ_WriteLong (sizebuf_t *buf, int c);
 void MSG_WriteDeltaUsercmd (const struct usercmd_s *from, const struct usercmd_s /*@out@*/*cmd, int protocol);
 void MSG_WriteDir (vec3_t vector);
 
+#if KINGPIN
+void SV_WriteDeltaEntity (const struct entity_state_s *from, const struct entity_state_s /*@out@*/*to, qboolean force, qboolean newentity, qboolean deltaorigin, int protocol_version);
+#else
 void SV_WriteDeltaEntity (const struct entity_state_s *from, const struct entity_state_s /*@out@*/*to, qboolean force, qboolean newentity, int cl_protocol, int protocol_version);
+#endif
 
 
 void	MSG_BeginReading (sizebuf_t *sb);
@@ -299,6 +315,9 @@ PROTOCOL
 
 // protocol.h -- communications protocols
 
+#if KINGPIN
+#define	PROTOCOL_ORIGINAL	32
+#else
 #define	PROTOCOL_ORIGINAL	34
 #define	PROTOCOL_R1Q2		35
 
@@ -307,12 +326,17 @@ PROTOCOL
 //minimum versions for some features
 #define MINOR_VERSION_R1Q2_UCMD_UPDATES	1904
 #define	MINOR_VERSION_R1Q2_32BIT_SOLID	1905
+#endif
 
 //=========================================
 
 #define	PORT_MASTER	27900
+#if KINGPIN
+#define	PORT_SERVER	31510
+#else
 //#define	PORT_CLIENT	27901
 #define	PORT_SERVER	27910
+#endif
 
 //=========================================
 
@@ -338,6 +362,34 @@ enum svc_ops_e
 {
 	svc_bad,
 
+#if KINGPIN
+	svc_muzzleflash,
+	svc_muzzleflash2,
+	svc_muzzleflash3,
+	svc_temp_entity,
+	svc_layout,
+	svc_inventory,
+	svc_hud,
+	svc_nop,
+	svc_disconnect,
+	svc_reconnect,
+	svc_sound,					// <see code>
+	svc_print,					// [byte] id [string] null terminated string
+	svc_stufftext,				// [string] stuffed into client's console buffer, should be \n terminated
+	svc_serverdata,				// [long] protocol ...
+	svc_configstring,			// [short] [string]
+	svc_spawnbaseline,		
+	svc_centerprint,			// [string] to put in center of the screen
+	svc_download,				// [short] size [size bytes]
+	svc_playerinfo,				// variable
+	svc_packetentities,			// [...]
+	svc_deltapacketentities,	// [...]
+	svc_frame,
+	svc_configstring_pointer,
+	svc_pushdownload,
+	svc_cpacket,				// MH: compressed packet for patched clients
+	svc_xdownload,				// MH: download packet for patched clients
+#else
 	// these ops are known to the game dll
 	svc_muzzleflash,
 	svc_muzzleflash2,
@@ -370,6 +422,7 @@ enum svc_ops_e
 	// ********** end r1q2 specific *******
 
 	svc_max_enttypes
+#endif
 };
 
 typedef enum
@@ -417,6 +470,16 @@ enum clc_ops_e
 #define	PS_M_GRAVITY		(1<<5)
 #define	PS_M_DELTA_ANGLES	(1<<6)
 
+#if KINGPIN
+#define	PS_VIEWOFFSET		(1<<8)
+#define	PS_VIEWANGLES		(1<<9)
+#define	PS_KICKANGLES		(1<<10)
+#define	PS_BLEND			(1<<11)
+#define	PS_FOV				(1<<12)
+#define	PS_WEAPONINDEX		(1<<13)
+#define	PS_WEAPONFRAME		(1<<14)
+#define	PS_RDFLAGS			(1<<15)
+#else
 #define	PS_VIEWOFFSET		(1<<7)
 #define	PS_VIEWANGLES		(1<<8)
 #define	PS_KICKANGLES		(1<<9)
@@ -426,6 +489,7 @@ enum clc_ops_e
 #define	PS_WEAPONFRAME		(1<<13)
 #define	PS_RDFLAGS			(1<<14)
 #define	PS_BBOX				(1<<15)
+#endif
 
 //r1 extra hacky bits that are hijacked for more bandwidth goodness. 4 bits in surpresscount
 //and 3 in the server message byte (!!!!!!!!)
@@ -472,7 +536,11 @@ enum clc_ops_e
 #define	U_ANGLE2	(1<<2)
 #define	U_ANGLE3	(1<<3)
 #define	U_FRAME8	(1<<4)		// frame is a byte
+#if KINGPIN
+#define	U_EVENT		(1<<13)
+#else
 #define	U_EVENT		(1<<5)
+#endif
 #define	U_REMOVE	(1<<6)		// REMOVE this entity, don't add it
 #define	U_MOREBITS1	(1<<7)		// read one additional byte
 
@@ -500,6 +568,16 @@ enum clc_ops_e
 #define	U_SKIN16	(1<<25)
 #define	U_SOUND		(1<<26)
 #define	U_SOLID		(1<<27)
+
+#if KINGPIN
+#define	U_ORIGINDELTA (1<<5)
+#define	U_SOUND16	(1<<20)
+#define	U_PART3MODEL (1<<21)
+#define	U_NUMPARTS	(1<<28)
+#define	U_MODELPARTS (1<<29)
+#define	U_MODELLIGHT (1<<30)
+#define	U_SCALE		(1<<31)
+#endif
 
 //#define	U_COPYOLD	(1<<29)
 /*
@@ -568,9 +646,11 @@ void Cbuf_Execute (void);
 //===========================================================================
 
 //r1: zlib
+#if !KINGPIN
 #ifndef NO_ZLIB
 int ZLibCompressChunk(byte *in, int len_in, byte *out, int len_out, int method, int wbits);
 int ZLibDecompress (byte *in, int inlen, byte /*@out@*/*out, int outlen, int wbits);
+#endif
 #endif
 /*
 
@@ -717,14 +797,21 @@ NET
 
 #define	PORT_ANY	-1
 
-//#define	MAX_MSGLEN		1400	// max length of a message
+#if KINGPIN
+#define	MAX_MSGLEN		1400	// max length of a message
+#else
 #define	MAX_MSGLEN		4096		// udp fragmentation isn't so bad these days
+#endif
 #define	PACKET_HEADER	10			// two ints and a short
 #define	MAX_USABLEMSG	MAX_MSGLEN - PACKET_HEADER
 
 typedef enum {NA_LOOPBACK, NA_BROADCAST, NA_IP} netadrtype_t;
 
+#if KINGPIN
+typedef enum {NS_CLIENT, NS_SERVER, NS_SERVER_GS} netsrc_t;
+#else
 typedef enum {NS_CLIENT, NS_SERVER} netsrc_t;
+#endif
 
 typedef struct
 {
@@ -762,6 +849,7 @@ int			NET_SendPacket (netsrc_t sock, int length, const void *data, netadr_t *to)
 
 char		*NET_inet_ntoa (uint32 ip);
 char		*NET_AdrToString (netadr_t *a);
+char		*NET_BaseAdrToString (netadr_t *a);
 qboolean	NET_StringToAdr (const char *s, netadr_t *a);
 #ifndef NO_SERVER
 void		NET_Sleep(int msec);
@@ -812,8 +900,13 @@ typedef struct
 	int			reliable_length;
 	byte		reliable_buf[MAX_USABLEMSG];	// unacked reliable message
 
-	unsigned	total_dropped;
-	unsigned	total_received;
+	// MH: packet loss counting
+	qboolean	countacks;
+	unsigned	out_total;
+	unsigned	out_dropped;
+	unsigned	in_total;
+	unsigned	in_dropped;
+
 	unsigned	packetdup;
 } netchan_t;
 
@@ -935,9 +1028,14 @@ Common between server and client so prediction matches
 ==============================================================
 */
 
+#if !KINGPIN
 extern qboolean pm_airaccelerate;
+#endif
 
 void Pmove (pmove_new_t *pmove);
+
+// MH: used in SV_BuildClientFrame
+void PM_ClipVelocity (vec3_t in, vec3_t normal, vec3_t out, float overbounce);
 
 /*
 ==============================================================
@@ -953,6 +1051,10 @@ typedef enum
 	HANDLE_OPEN,
 	HANDLE_DUPE
 } handlestyle_t;
+
+#if KINGPIN
+extern const char *lastpakfile; // MH: PAK that last opened file is from (if any)
+#endif
 
 void FS_ReloadPAKs (void);
 void	FS_InitFilesystem (void);
@@ -1022,7 +1124,11 @@ extern	int	server_state;
 #define	Com_ServerState()	(server_state)
 
 uint32	Com_BlockChecksum (void *buffer, int length);
+#if KINGPIN
+byte	COM_BlockSequenceCheckByte (byte *base, int length, int sequence, int challenge);
+#else
 byte	COM_BlockSequenceCRCByte (byte *base, int length, int sequence);
+#endif
 
 //float	frand(void);	// 0 ti 1
 //float	crand(void);	// -1 to 1
@@ -1076,12 +1182,14 @@ enum tagmalloc_tags_e
 	TAGMALLOC_CL_PARTICLES,
 
 	TAGMALLOC_CLIENT_DOWNLOAD,
+#ifndef DEDICATED_ONLY // MH: not used in dedicated server
 	TAGMALLOC_CLIENT_KEYBIND,
 	TAGMALLOC_CLIENT_SFX,
 	TAGMALLOC_CLIENT_SOUNDCACHE,
 	TAGMALLOC_CLIENT_DLL,
 	TAGMALLOC_CLIENT_LOC,
 	TAGMALLOC_CLIENT_IGNORE,
+#endif
 	TAGMALLOC_BLACKHOLE,
 	TAGMALLOC_CVARBANS,
 	//TAGMALLOC_MSG_QUEUE,
@@ -1090,6 +1198,9 @@ enum tagmalloc_tags_e
 	TAGMALLOC_LRCON,
 #ifdef ANTICHEAT
 	TAGMALLOC_ANTICHEAT,
+#endif
+#if KINGPIN
+	TAGMALLOC_DOWNLOAD_CACHE, // MH: download cache entries
 #endif
 	TAGMALLOC_MAX_TAGS
 };
@@ -1100,6 +1211,7 @@ extern void *(EXPORT *Z_TagMalloc)(int size, int tag);
 
 //void EXPORT Z_Free (void *ptr);
 //void *Z_TagMalloc (int size, int tag);
+void *Z_Realloc (void *ptr, int size); // MH: reallocate a memory block
 
 void EXPORT Z_FreeGame (void *buf);
 void RESTRICT * EXPORT Z_TagMallocGame (int size, int tag);
@@ -1177,6 +1289,16 @@ void	Sys_CopyProtect (void);
 void	Sys_SetWindowText(char *buff);
 void	Sys_ProcessTimes_f (void);
 void	Sys_Spinstats_f (void);
+
+#if KINGPIN
+// MH: worker thread stuff
+#ifdef _WIN32
+intptr_t Sys_StartThread(unsigned long (__stdcall *func)(void*), void *param, int priority);
+#else
+intptr_t Sys_StartThread(void *(*func)(void*), void *param, int priority);
+#endif
+void Sys_WaitThread(intptr_t thread);
+#endif
 
 /*
 ==============================================================

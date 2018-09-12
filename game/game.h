@@ -48,9 +48,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	SVF_DEADMONSTER			0x00000002	// treat as CONTENTS_DEADMONSTER for collision
 #define	SVF_MONSTER				0x00000004	// treat as CONTENTS_MONSTER for collision
 
+#if KINGPIN
+#define	SVF_PROP				0x00000008	// treat as CONTENTS_PROP for collision
+#else
 //!!! r1q2 specific
 #define	SVF_NOPREDICTION		0x00000008	// send this as solid=0 to the client to ignore prediction
 //!!! r1q2 specific
+#endif
 
 // edict->solid values
 
@@ -83,7 +87,13 @@ struct gclient_s
 
 	// the game dll can add anything it wants after
 	// this point in the structure
-	int					clientNum;	//ONLY read if game dll gives permission through QUAKE2_GAME_FEATURES env var. current "pov" client to hide.
+
+	// ONLY read if game dll gives permission through g_features
+	int					clientNum;	// current "pov" client to hide.
+#if KINGPIN
+	int					team;
+	qboolean			noents;
+#endif
 };
 
 struct edict_s
@@ -109,6 +119,10 @@ struct edict_s
 	solid_t		solid;
 	int			clipmask;
 	edict_t		*owner;
+
+#if KINGPIN
+	float		voice_pitch;		// used to pitch voices up/down, 1.0 = same, 2.0 = chipmunk (double speed)
+#endif
 
 	// the game dll can add anything it wants after
 	// this point in the structure
@@ -161,6 +175,10 @@ typedef struct
 	int		(EXPORT *soundindex) (const char *name);
 	int		(EXPORT *imageindex) (const char *name);
 
+#if KINGPIN
+	int		(EXPORT *skinindex) (int modelindex, const char *name);
+#endif
+
 	void	(EXPORT *setmodel) (edict_t *ent, const char *name);
 
 	// collision detection
@@ -197,6 +215,11 @@ typedef struct
 	void	(EXPORT *TagFree) (void *block);
 	void	(EXPORT *FreeTags) (int tag);
 
+#if KINGPIN
+	void	(EXPORT *ClearObjectBoundsCached) (void);
+	void	(EXPORT *StopRender) (void);
+#endif
+
 	// console variable interaction
 	cvar_t	*(EXPORT *cvar) (const char *var_name, const char *value, int flags);
 	cvar_t	*(EXPORT *cvar_set) (const char *var_name, const char *value);
@@ -212,6 +235,11 @@ typedef struct
 	void	(EXPORT *AddCommandString) (const char *text);
 
 	void	(EXPORT *DebugGraph) (float value, int color);
+
+#if KINGPIN
+	void	(EXPORT *GetObjectBounds) (const char *mdx_filename, model_part_t *model_part);
+	void	(EXPORT *SaveCurrentGame) (void);
+#endif
 } game_import_t;
 
 //
@@ -256,6 +284,12 @@ typedef struct
 	// The game can issue gi.argc() / gi.argv() commands to get the rest
 	// of the parameters
 	void		(IMPORT *ServerCommand) (void);
+
+#if KINGPIN
+	int			*(IMPORT *GetNumObjectBounds) (void);
+	void		*(IMPORT *GetObjectBoundsPointer) (void);
+	int			(IMPORT *GetNumJuniors) (void);
+#endif
 
 	//
 	// global variables shared between game and server

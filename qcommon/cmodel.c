@@ -616,10 +616,8 @@ cmodel_t *CM_LoadMap (const char *name, qboolean clientload, uint32 *checksum)
 	numcmodels = 0;
 	numvisibility = 0;
 	numentitychars = 0;
-
-	//r1: fix for missing terminators on some badly compiled maps
-	memset (map_entitystring, 0, sizeof(map_entitystring));
-	memset (map_name, 0, sizeof(map_name));
+	map_entitystring[0] = 0; // MH: put back
+	map_name[0] = 0; // MH: put back
 
 	if (!name || !name[0])
 	{
@@ -640,12 +638,36 @@ cmodel_t *CM_LoadMap (const char *name, qboolean clientload, uint32 *checksum)
 	//r1: allow transparent server-side map entity replacement
 	if (!clientload)
 	{
-		FILE			*script;
 		char			csname[MAX_QPATH];
+#if KINGPIN
+		char			*script;
+#else
+		FILE			*script;
 		qboolean		closeFile;
+#endif
 
 		Com_sprintf (csname, sizeof(csname), "%s.override", name);
-		
+
+#if KINGPIN
+		// MH: Kingpin override files include the source map name in a first line comment
+		length = FS_LoadFile(csname, (void**)&script);
+		if (script)
+		{
+			char *p;
+			if (script[0] != '/' || script[1] != '/' || !(p = strpbrk(script, "\r\n")))
+				Com_Error (ERR_DROP, "CM_LoadMap: %s is missing source map name in first line", csname);
+			*p++ = 0;
+			length -= p - script;
+			if (!length || length >= MAX_MAP_ENTSTRING)
+				Com_Error (ERR_DROP, "CM_LoadMap: bad entity string size %u in %s", length, csname);
+			Com_sprintf (newname, sizeof(newname), "maps/%s.bsp", script + 2);
+			name = newname;
+			memcpy(map_entitystring, p, length);
+			numentitychars = length;
+			FS_FreeFile(script);
+			override_bits = 5;
+		}
+#else
 		FS_FOpenFile (csname, &script, HANDLE_OPEN, &closeFile);
 
 		if (script)
@@ -668,12 +690,14 @@ cmodel_t *CM_LoadMap (const char *name, qboolean clientload, uint32 *checksum)
 					Com_Error (ERR_DROP, "CM_LoadMap: bad entity string size %u", length);
 				}
 				FS_Read (map_entitystring, length, script);
+				numentitychars = length; // MH: added
 			}
 
 			if (closeFile)
 				FS_FCloseFile (script);
 			name = newname;
 		}
+#endif
 	}
 
 	//FIXME: make this work clientside too... ugly fs hacks needed i guess :/
@@ -793,6 +817,10 @@ cmodel_t *CM_LoadMap (const char *name, qboolean clientload, uint32 *checksum)
 
 	if (!(override_bits & 4))
 		CMod_LoadEntityString (&header.lumps[LUMP_ENTITIES]);
+
+	// MH: add null terminator just in case it's missing
+	if (numentitychars < MAX_MAP_ENTSTRING)
+		map_entitystring[numentitychars] = 0;
 
 	Z_Free (buf);
 

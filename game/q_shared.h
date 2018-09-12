@@ -20,6 +20,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifndef _QSHARED_H
 
+#if KINGPIN
+#define DEDICATED_ONLY 1
+#define NPROFILE 1
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -147,8 +152,14 @@ typedef uint64_t uint64;
 //XXX: are these portable enough on non-win32?
 #define Q_stricmp strcasecmp
 #define Q_strncasecmp strncasecmp
+#if KINGPIN
+// MH: compatibility with GCC 2.7.2
+#define EXPORT __attribute__((callee_pop_aggregate_return(0)))
+#define IMPORT __attribute__((callee_pop_aggregate_return(0)))
+#else
 #define EXPORT
 #define IMPORT
+#endif
 void Q_strlwr (char *str);
 int Q_vsnprintf (char *buff, size_t len, const char *fmt, va_list va);
 //int Q_snprintf (char *buff, size_t len, const char *fmt, ...);
@@ -193,15 +204,17 @@ typedef enum {false, true}	qboolean;
 #define NULL ((void *)0)
 #endif
 
-#ifdef _WIN32
+// MH: these seem fine with GCC/Linux too
+#if 1//def _WIN32
 #define FLOAT2INTCAST(f)(*((int32 *)(&f)))
 #define FLOAT2UINTCAST(f)(*((uint32 *)(&f)))
 #define FLOAT_LT_ZERO(f) (FLOAT2UINTCAST(f) > 0x80000000U)
 #define FLOAT_LE_ZERO(f) (FLOAT2INTCAST(f) <= 0)
 #define FLOAT_GT_ZERO(f) (FLOAT2INTCAST(f) > 0)
 #define FLOAT_GE_ZERO(f) (FLOAT2UINTCAST(f) <= 0x80000000U)
-#define	FLOAT_EQ_ZERO(f) (FLOAT2INTCAST(f) == 0)
-#define	FLOAT_NE_ZERO(f) (FLOAT2INTCAST(f) != 0)
+// MH: support for -0
+#define	FLOAT_EQ_ZERO(f) ((FLOAT2INTCAST(f) & 0x7FFFFFFF) == 0)
+#define	FLOAT_NE_ZERO(f) ((FLOAT2INTCAST(f) & 0x7FFFFFFF) != 0)
 #else
 //gcc breaks ieee compatibility with -ffast-math? i guess since these break horribly on linux
 #define	FLOAT_LT_ZERO(f) ((f) < 0)
@@ -234,6 +247,18 @@ do { \
 //
 // per-level limits
 //
+#if KINGPIN
+#define	MAX_CLIENTS			256		// absolute limit
+#define	MAX_EDICTS			2048	// must change protocol to increase more
+#define	MAX_LIGHTSTYLES		256
+#define	MAX_MODELS			256		// these are sent over the net as bytes
+#define	MAX_SOUNDS			384		// so they cannot be blindly increased
+#define	MAX_IMAGES			256
+#define	MAX_ITEMS			256
+#define MAX_LIGHTFLARES		128
+#define MAX_JUNIOR_STRINGS	512
+#define MAX_GENERAL			(MAX_CLIENTS*2)	// general config strings
+#else
 #define	MAX_CLIENTS			256		// absolute limit
 #define	MAX_EDICTS			1024	// must change protocol to increase more
 #define	MAX_LIGHTSTYLES		256
@@ -242,6 +267,7 @@ do { \
 #define	MAX_IMAGES			256
 #define	MAX_ITEMS			256
 #define MAX_GENERAL			(MAX_CLIENTS*2)	// general config strings
+#endif
 
 
 // game print flags
@@ -673,6 +699,21 @@ COLLISION DETECTION
 #define	SURF_FLOWING	0x40	// scroll towards angle
 #define	SURF_NODRAW		0x80	// don't bother referencing the texture
 
+#if KINGPIN
+#define	SURF_BURNT		0x100	// Ridah, used for rendering, marks this surface as having been burnt or charred
+#define	SURF_SPECULAR		0x400		// Ridah, shows specular lighting from light flares
+#define	SURF_DIFFUSE		0x800		// Ridah, used with specular lighting, makes it bigger and less intense
+#define SURF_ALPHA		0x1000	// wire fence effect flag
+#define SURF_WATER      0x80000
+#define SURF_CONCRETE	0x100000
+#define SURF_FABRIC		0x200000
+#define SURF_GRAVEL		0x400000
+#define SURF_METAL		0x800000
+#define SURF_METAL_L	0x1000000
+#define SURF_SNOW		0x2000000
+#define SURF_TILE		0x4000000
+#define SURF_WOOD		0x8000000
+#endif
 
 
 // content masks
@@ -702,6 +743,12 @@ typedef struct cplane_s
 	byte	type;			// for fast side tests
 	byte	signbits;		// signx + (signy<<1) + (signz<<1)
 	byte	pad[2];
+
+#if KINGPIN
+	int		spec_updateframe;	// so we only do each plane once
+	int		spec_updateframe_backface;
+	byte	spec_render, spec_render_back;
+#endif
 } cplane_t;
 
 //r1: "fast" plane for server calcs
@@ -764,6 +811,15 @@ typedef enum
 {
 	// can accelerate and turn
 	PM_NORMAL,
+
+#if KINGPIN
+	PM_NORMAL_WITH_JETPACK,
+	PM_HOVERCAR,			// flying hovercar
+	PM_HOVERCAR_GROUND,		// grounded hovercar
+	PM_BIKE,				// motorcycle
+	PM_CAR,					// uses vehicle code
+#endif
+
 	PM_SPECTATOR,
 	// no acceleration or turning
 	PM_DEAD,
@@ -779,6 +835,10 @@ typedef enum
 #define	PMF_TIME_LAND		16	// pm_time is time before rejump
 #define	PMF_TIME_TELEPORT	32	// pm_time is non-moving time
 #define PMF_NO_PREDICTION	64	// temporarily disables prediction (used for grappling hook)
+
+#if KINGPIN
+#define PMF_CHASECAM		128
+#endif
 
 // this structure needs to be communicated bit-accurate
 // from the server to the client to guarantee that
@@ -796,6 +856,10 @@ typedef struct
 	int16		gravity;
 	int16		delta_angles[3];	// add to command angles to get view direction
 									// changed by spawns, rotating objects, and teleporters
+
+#if KINGPIN
+	byte		runscale;		// Ridah, so we can mess with the running speed
+#endif
 } pmove_state_t;
 
 
@@ -854,8 +918,16 @@ typedef struct
 	// callbacks to test the world
 	trace_t		(IMPORT *trace) (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end);
 	int			(IMPORT *pointcontents) (vec3_t point);
+
+#if KINGPIN
+	int			footsteptype;
+	int			wall_collision;
+#endif
 } pmove_t;
 
+#if KINGPIN
+typedef pmove_t pmove_new_t;
+#else
 typedef struct
 {
 	// state (in / out)
@@ -886,6 +958,7 @@ typedef struct
 	qboolean	strafehack;
 	qboolean	enhanced;
 } pmove_new_t;
+#endif
 
 // entity_state_t->effects
 // Effects are things handled on the client side (lights, particles, frame animations)
@@ -1241,6 +1314,67 @@ extern	const vec3_t monster_flash_offset [];
 // and broadcast.
 typedef enum
 {
+#if KINGPIN
+	TE_GUNSHOT,
+	TE_GUNSHOT_VISIBLE,
+	TE_BLOOD,
+	TE_BLASTER,
+	TE_RAILTRAIL,
+	TE_SHOTGUN,
+	TE_EXPLOSION1,
+	TE_EXPLOSION2,
+	TE_ROCKET_EXPLOSION,
+	TE_GRENADE_EXPLOSION,
+	TE_METAL_SPARKS,
+	TE_SPARKS,
+	TE_SPLASH,
+	TE_BUBBLETRAIL,
+	TE_SCREEN_SPARKS,
+	TE_SHIELD_SPARKS,
+	TE_BULLET_SPARKS,
+	TE_LASER_SPARKS,
+	TE_PARASITE_ATTACK,
+	TE_ROCKET_EXPLOSION_WATER,
+	TE_GRENADE_EXPLOSION_WATER,
+	TE_MEDIC_CABLE_ATTACK,
+	TE_BFG_EXPLOSION,
+	TE_BFG_BIGEXPLOSION,
+	TE_BOSSTPORT,
+	TE_BFG_LASER,
+	TE_GRAPPLE_CABLE,
+	TE_WELDING_SPARKS,
+	TE_GREENBLOOD,
+	TE_BLUEHYPERBLASTER,
+	TE_PLASMA_EXPLOSION,
+	TE_TUNNEL_SPARKS,
+	TE_SFXFIRE,
+	TE_SFXSMOKE,
+	TE_SFXFIREGO,
+	TE_SUN_FLARE,
+	TE_GUN_FLARE,
+	TE_SNOW,
+	TE_RAIN,
+	TE_LIGHT_FLARE,
+	TE_BLOOD_DRIP,
+	TE_BLOOD_SPLAT,
+	TE_BLOOD_POOL,
+	TE_SURFACE_SPRITE_ENTITY,
+	TE_BURN_TO_A_CRISP,
+	TE_CONCUSSION_EXPLOSION,
+	TE_CONCUSSION_EXPLOSION_WATER,
+	TE_EXPLOSION1B,
+	TE_IMPACT,
+	TE_EXPLOSION1C,
+	TE_SFXSTEAM,
+	TE_SFXSMOKE2,
+	TE_IMPACT_CONCUSSION,
+	TE_ART_BURN,
+	TE_FOG_BRUSH,
+	TE_GIBS,
+	TE_CONCUSSION_EXPLOSION_BIG,
+	TE_BARMACHINGUN,
+	TE_SFXFIRET
+#else
 	TE_GUNSHOT,
 	TE_BLOOD,
 	TE_BLASTER,
@@ -1299,6 +1433,7 @@ typedef enum
 	TE_EXPLOSION1_NP,
 	TE_FLECHETTE
 //ROGUE
+#endif
 } temp_event_t;
 
 #define SPLASH_UNKNOWN		0
@@ -1324,6 +1459,8 @@ typedef enum
 #define	CHAN_RELIABLE			16	// send by reliable message, not datagram
 //R1Q2 SPECIFIC XXX
 #define	CHAN_SERVER_ATTN_CALC	32
+// MH: send only to clients in PVS
+#define CHAN_PVS				64
 
 // sound attenuation values
 #define	ATTN_NONE               0	// full volume the entire level
@@ -1333,6 +1470,48 @@ typedef enum
 
 
 // player_state->stats[] indexes
+#if KINGPIN
+#define STAT_CASH_PICKUP        0
+#define	STAT_HEALTH				1
+#define	STAT_AMMO_ICON			2
+#define	STAT_AMMO				3
+#define	STAT_ARMOR1				4
+#define	STAT_ARMOR2				5
+#define	STAT_ARMOR3				6
+#define	STAT_PICKUP_ICON		7
+#define	STAT_PICKUP_STRING		8
+#define	STAT_ENDPIC				9
+#define	STAT_TIMER				10
+#define	STAT_HELPICON			11
+#define	STAT_SELECTED_ITEM		12
+#define	STAT_LAYOUTS			13
+#define	STAT_FRAGS				14
+#define	STAT_FLASHES			15		// cleared each frame, 1 = health, 2 = armor
+#define STAT_CASH				16
+#define STAT_PICKUP_COUNT		17
+#define STAT_CLIP				18
+#define STAT_CLIP_ICON			19
+#define STAT_HUD_INV			20
+// Following are duplicated for deathmatch, so beware if changing!
+#define STAT_HUD_ENEMY_TALK		21
+#define STAT_HUD_SELF_TALK		22
+#define STAT_HUD_ENEMY_TALK_TIME 23
+#define STAT_HUD_SELF_TALK_TIME 24
+#define STAT_FORCE_HUD			25
+#define STAT_HUD_HIRE1			26
+#define STAT_HUD_HIRE2			27
+#define STAT_HUD_HIRE1_CMD		28
+#define STAT_HUD_HIRE2_CMD		29
+// Ridah, duplicated these for use in teamplay, since they aren't used at all in multiplay
+#define STAT_BAGCASH			21
+#define STAT_DEPOSITED			22
+#define STAT_TEAM1_SCORE		26
+#define STAT_TEAM2_SCORE		27
+#define STAT_TEAM1_FLASH		28		// 0 - no flash, 1 - green, 2 - red
+#define STAT_TEAM2_FLASH		29		// 0 - no flash, 1 - green, 2 - red
+#define STAT_HIDE_HUD           30
+#define STAT_SWITCH_CAMERA      31
+#else
 #define STAT_HEALTH_ICON		0
 #define	STAT_HEALTH				1
 #define	STAT_AMMO_ICON			2
@@ -1351,6 +1530,7 @@ typedef enum
 #define	STAT_FLASHES			15		// cleared each frame, 1 = health, 2 = armor
 #define STAT_CHASE				16
 #define STAT_SPECTATOR			17
+#endif
 
 #define	MAX_STATS				32
 
@@ -1433,6 +1613,32 @@ ROGUE - VERSIONS
 // the server to all connected clients.
 // Each config string can be at most MAX_QPATH characters.
 //
+#if KINGPIN
+#define	CS_NAME				0
+#define	CS_CDTRACK			1
+#define CS_DENSITY			2
+#define CS_FOGVAL			3
+#define CS_DENSITY2			4
+#define CS_FOGVAL2			5
+#define	CS_SKY				6
+#define	CS_STATUSBAR		7		// display program string
+
+#define	CS_SERVER_VERSION	29		// so new clients can decide which version of download code to use
+#define	CS_MAXCLIENTS		30
+#define	CS_MAPCHECKSUM		31		// for catching cheater maps
+
+#define	CS_MODELS			32
+#define	CS_SOUNDS			(CS_MODELS+MAX_MODELS)
+#define	CS_IMAGES			(CS_SOUNDS+MAX_SOUNDS)
+#define CS_MODELSKINS		(CS_IMAGES+MAX_IMAGES)
+#define	CS_LIGHTS			(CS_MODELSKINS+MAX_MODELS)
+#define	CS_ITEMS			(CS_LIGHTS+MAX_LIGHTSTYLES)
+#define	CS_PLAYERSKINS		(CS_ITEMS+MAX_ITEMS)
+#define	CS_LIGHTFLARES		(CS_PLAYERSKINS+MAX_CLIENTS)
+#define	CS_JUNIORS			(CS_LIGHTFLARES+MAX_LIGHTFLARES)
+#define CS_GENERAL			(CS_JUNIORS+MAX_JUNIOR_STRINGS)
+#define	MAX_CONFIGSTRINGS	(CS_GENERAL+MAX_GENERAL)
+#else
 #define	CS_NAME				0
 #define	CS_CDTRACK			1
 #define	CS_SKY				2
@@ -1452,6 +1658,7 @@ ROGUE - VERSIONS
 #define	CS_PLAYERSKINS		(CS_ITEMS+MAX_ITEMS)			//1312
 #define CS_GENERAL			(CS_PLAYERSKINS+MAX_CLIENTS)	//1568
 #define	MAX_CONFIGSTRINGS	(CS_GENERAL+MAX_GENERAL)		//2080
+#endif
 
 
 //==============================================
@@ -1473,6 +1680,67 @@ typedef enum
 	EV_OTHER_TELEPORT
 } entity_event_t;
 
+#if KINGPIN
+typedef struct
+{
+	vec3_t	mins, maxs;
+} object_bounds_t;
+
+#define	MAX_MODEL_PARTS			8	// must change network code to increase this (also savegame code)
+#define	MAX_MODELPART_OBJECTS	8	// absolutely do not change, bound by "invisible_objects" bit-flags
+
+typedef struct model_part_s
+{
+// Ridah, MDX, ENABLE the following line when .mdx system goes online
+	int		modelindex;					// leave as 0 if blank
+
+//	int		invisible_objects;			// bit flags that define which sub-parts NOT to display when SET
+	byte	invisible_objects;			// bit flags that define which sub-parts NOT to display when SET
+	byte	skinnum[MAX_MODELPART_OBJECTS];
+
+	// server-only data used for collision detection, etc
+	int		object_bounds[MAX_MODELPART_OBJECTS];	// read in and allocated immediately after setting the modelindex
+	char	*objectbounds_filename;			// so we can restore the object bounds data when loading a savegame
+
+	int     baseskin;
+	byte	hitpoints[MAX_MODELPART_OBJECTS];
+	byte	hit_scale[MAX_MODELPART_OBJECTS]; // 0-250
+} model_part_t;
+
+#define	MAX_MODEL_DIR_LIGHTS	3		// bound to 8 by network code
+
+typedef struct
+{
+	int		light_indexes[MAX_MODEL_DIR_LIGHTS];	// so we can tell the client to use a certain light index, and it knows the details for that light
+
+	vec3_t	light_vecs[MAX_MODEL_DIR_LIGHTS];		// static light directions that touch this model (dynamic are added in ref_gl)
+	vec3_t	light_colors[MAX_MODEL_DIR_LIGHTS];
+	float	light_intensities[MAX_MODEL_DIR_LIGHTS];	// 0.0 -> 1.0
+	byte	light_styles[MAX_MODEL_DIR_LIGHTS];
+	int		num_dir_lights;
+
+	// below this doesn't get sent to client (only used at server side)
+	vec3_t	light_orgs[MAX_MODEL_DIR_LIGHTS];
+
+} model_lighting_t;
+
+typedef struct flamejunc_s
+{
+	vec3_t	org, vel;
+	float	start_width, end_width, start_height, end_height;	
+	float	lifetime, fadein_time;
+	float	start_alpha, end_alpha;
+
+	// current values
+	float	aged, alpha;
+	float	width, height;
+
+	vec3_t	unitvel;
+	int		hit_wall;
+
+	struct flamejunc_s	*next;
+} flamejunc_t;
+#endif
 
 // entity_state_t is the information conveyed from the server
 // in an update message about entities that the client will
@@ -1485,7 +1753,9 @@ typedef struct entity_state_s
 	vec3_t	angles;
 	vec3_t	old_origin;		// for lerping
 	int32		modelindex;
+#if !KINGPIN
 	int32		modelindex2, modelindex3, modelindex4;	// weapons, CTF flags, etc
+#endif
 	int32		frame;
 	int32		skinnum;
 	uint32	effects;		// PGM - we're filling it, so it needs to be unsigned
@@ -1497,6 +1767,33 @@ typedef struct entity_state_s
 	int32		event;		// impulse events -- muzzle flashes, footsteps, etc
 							// events only go out for a single frame, they
 							// are automatically cleared each frame
+
+#if KINGPIN
+	int		renderfx2;
+
+	// Ridah, MDX, making way for .mdx system..
+	int		num_parts;
+	model_part_t	model_parts[MAX_MODEL_PARTS];
+	// done.
+
+	// Ridah, new lighting data
+	model_lighting_t	model_lighting;
+
+	vec3_t	last_lighting_update_pos;	// so we only calculate when a good distance from the last checked position
+	vec3_t	last_lighting_vec_update_pos;	// set when we update the vecs
+
+	// Ridah, flamethrower (only used on client-side)
+	flamejunc_t	*flamejunc_head;
+	// JOSEPH 15-APR-99
+	flamejunc_t	*flamejunc_head2;
+	// END JOSEPH
+	int	last_time, prev_last_time;		// time of last call to CL_FlameEffects() for this entity
+	byte		broken_flag;			// set if we release the trigger, so next time we fire, we can free all current flames
+
+	float	alpha;			// set in CL_AddPacketEntities() from entity_state->effects
+
+	float	scale;			// ranges from 0.0 -> 2.0
+#endif
 } entity_state_t;
 
 //==============================================
@@ -1531,6 +1828,12 @@ typedef struct
 	int			rdflags;		// refdef flags
 
 	int16		stats[MAX_STATS];		// fast status bar updates
+
+#if KINGPIN
+ 	int			num_parts;
+ 	model_part_t	model_parts[MAX_MODEL_PARTS];
+	int			weapon_usage;
+#endif
 } player_state_t;
 
 // ==================

@@ -20,10 +20,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "qcommon.h"
 #include "redblack.h"
+
+#if !defined(NO_ZLIB) && !KINGPIN
 #include "unzip.h"
+#endif
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#define stat _stat
+#endif
 /*
 =============================================================================
 
@@ -41,7 +47,9 @@ typedef struct
 	union filehandle_type
 	{
 		FILE			*handle;
+#ifdef _unz_H
 		unzFile			*zhandle;
+#endif
 	} h;
 	uint32			length;
 	uint32			refcount;
@@ -71,7 +79,9 @@ typedef struct pack_s
 	union packhandle_type
 	{
 		FILE			*handle;
+#ifdef _unz_H
 		unzFile			*zhandle;
+#endif
 	} h;
 	int				numfiles;
 	//packfile_t		*files;
@@ -106,6 +116,10 @@ static searchpath_t	*fs_searchpaths;
 static searchpath_t	*fs_base_searchpaths;	// without gamedirs
 
 static const char *current_filename;
+
+#if KINGPIN
+const char *lastpakfile;	// MH: PAK that last opened file is from (if any)
+#endif
 
 /*
 
@@ -480,7 +494,11 @@ void FS_WhereIs_f (void)
 	{
 		Com_Printf ("Purpose: Find where a file is being loaded from on the filesystem.\n"
 					"Syntax : whereis <path>\n"
+#if KINGPIN
+					"Example: whereis maps/kpdm1.bsp\n", LOG_GENERAL);
+#else
 					"Example: whereis maps/q2dm1.bsp\n", LOG_GENERAL);
+#endif
 		return;
 	}
 
@@ -570,6 +588,10 @@ int EXPORT FS_FOpenFile (const char *filename, FILE **file, handlestyle_t openHa
 	char			netpath[MAX_OSPATH];
 	char			lowered[MAX_QPATH];
 
+#if KINGPIN
+	lastpakfile = NULL;
+#endif
+
 	// check for links firstal
 	if (!fs_noextern->intvalue)
 	{
@@ -647,6 +669,12 @@ int EXPORT FS_FOpenFile (const char *filename, FILE **file, handlestyle_t openHa
 			if (cache->fileseek && fseek (*file, cache->fileseek, SEEK_SET))
 				Com_Error (ERR_FATAL, "Couldn't seek to offset %u in %s (cached)", cache->fileseek, cache->filepath);
 		}
+
+#if KINGPIN
+		if (cache->pak)
+			lastpakfile = cache->pak->filename;
+#endif
+
 		return cache->filelen;
 	}
 
@@ -766,6 +794,10 @@ int EXPORT FS_FOpenFile (const char *filename, FILE **file, handlestyle_t openHa
 						FS_AddToCache (pak->filename, entry->filelen, entry->filepos, filename, hash);
 	#endif
 					}
+
+#if KINGPIN
+					lastpakfile = pak->filename;
+#endif
 
 					return entry->filelen;
 				}
@@ -1071,7 +1103,7 @@ static pack_t /*@null@*/ *FS_LoadPackFile (const char *packfile, const char *ext
 
 		Com_Printf ("Added packfile %s (%i files)\n", LOG_GENERAL,  packfile, numpackfiles);
 	}
-#ifndef NO_ZLIB
+#ifdef _unz_H
 	else if (!strcmp (ext, "pkz"))
 	{
 		unzFile			f;
@@ -1175,6 +1207,7 @@ static void FS_LoadPaks (const char *dir, const char *ext)
 				{
 					pakfiles[totalpaks++] = atoi(s+pakmatchlen);
 				}
+#if !KINGPIN
 				else
 				{
 					filenames[total++] = strdup(s);
@@ -1182,6 +1215,7 @@ static void FS_LoadPaks (const char *dir, const char *ext)
 					//strcpy (filenames[total], s);
 					//total++;
 				}
+#endif
 			}
 
 			s = Sys_FindNext (0, SFF_SUBDIR | SFF_HIDDEN | SFF_SYSTEM);
@@ -1209,6 +1243,7 @@ static void FS_LoadPaks (const char *dir, const char *ext)
 		}
 	}
 
+#if !KINGPIN
 	//now the rest of them
 	for (i = 0; i < total; i++)
 	{
@@ -1223,6 +1258,7 @@ static void FS_LoadPaks (const char *dir, const char *ext)
 		}
 		free (filenames[i]);
 	}
+#endif
 }
 
 /*
@@ -1450,15 +1486,28 @@ void FS_SetGamedir (const char *dir)
 	if (!strcmp(dir,BASEDIRNAME) || (*dir == 0))
 	{
 		Com_sprintf (fs_gamedir, sizeof(fs_gamedir), "%s/%s", fs_basedir->string, BASEDIRNAME);
+#if KINGPIN // MH: no need for this to be in serverinfo
+		Cvar_FullSet ("gamedir", "", CVAR_NOSET);
+#else
 		Cvar_FullSet ("gamedir", "", CVAR_SERVERINFO|CVAR_NOSET);
+#endif
 		Cvar_FullSet ("game", "", CVAR_LATCH|CVAR_SERVERINFO);
 	}
 	else
 	{
 		Com_sprintf (fs_gamedir, sizeof(fs_gamedir), "%s/%s", fs_basedir->string, dir);
+#if KINGPIN // MH: no need for this to be in serverinfo
+		Cvar_FullSet ("gamedir", dir, CVAR_NOSET);
+#else
 		Cvar_FullSet ("gamedir", dir, CVAR_SERVERINFO|CVAR_NOSET);
+#endif
 		FS_AddGameDirectory (va("%s/%s", fs_basedir->string, dir) );
 	}
+
+#if KINGPIN
+	// MH: "clientdir" allows clients to use a different game directory (default to same as server)
+	Cvar_FullSet ("clientdir", Cvar_VariableString("gamedir"), CVAR_LATCH);
+#endif
 }
 
 
@@ -1478,7 +1527,7 @@ static void FS_Link_f (void)
 	{
 		Com_Printf ("Purpose: Create a link from one file system path to another.\n"
 					"Syntax : link <from> <to>\n"
-					"Example: link ./aq2/maps ./action/maps\n", LOG_GENERAL);
+					"Example: link maps ./action/maps\n", LOG_GENERAL); // MH: fixed example
 		return;
 	}
 
@@ -1660,21 +1709,81 @@ char /*@null@*/ *FS_NextPath (const char *prevpath)
 	searchpath_t	*s;
 	char			*prev;
 
-	if (!prevpath)
-		return fs_gamedir;
+	// MH: disabled to avoid duplicate
+/*	if (!prevpath)
+		return fs_gamedir;*/
 
 	prev = fs_gamedir;
 	for (s=fs_searchpaths ; s ; s=s->next)
 	{
 		if (s->pack)
 			continue;
-		if (prevpath == prev)
+		if (prevpath == prev || !prevpath) // MH: include prevpath=NULL case here instead of above
 			return s->filename;
 		prev = s->filename;
 	}
 
 	return NULL;
 }
+
+#ifdef LINUX
+// MH: change uppercase filenames to lowercase on Linux
+#include <dirent.h>
+#include <errno.h>
+
+static int FixFileNames(const char *path)
+{
+	DIR *d;
+	struct dirent *de;
+	int found = 0;
+
+	d = opendir(path);
+	if (!d)
+		return 0;
+
+	while (de = readdir(d))
+	{
+		char *p;
+		for (p = de->d_name; *p; p++)
+		{
+			if (*p >= 'A' && *p <= 'Z')
+			{
+				char newname[MAX_OSPATH];
+				char *name = va("%s/%s", path, de->d_name);
+				Q_strncpy(newname, name, sizeof(newname) - 1);
+				Q_strlwr(newname);
+				if (!access(newname, 4))
+					Com_Printf ("Didn't fix %s (lowercase file exists)\n", LOG_GENERAL|LOG_ERROR, name);
+				else if (rename(name, newname))
+					Com_Printf ("Couldn't fix %s (%s)\n", LOG_GENERAL|LOG_ERROR, name, strerror(errno));
+				else
+				{
+					Com_Printf ("Fixed %s\n", LOG_GENERAL, name);
+					if (de->d_type == DT_DIR)
+						Q_strlwr(de->d_name);
+				}
+				found++;
+				break;
+			}
+		}
+		if (de->d_type == DT_DIR && strcmp(de->d_name, ".") && strcmp(de->d_name, ".."))
+		{
+			char newpath[MAX_OSPATH];
+			Q_strncpy(newpath, va("%s/%s", path, de->d_name), sizeof(newpath) - 1);
+			found += FixFileNames(newpath);
+		}
+	}
+	closedir(d);
+
+	return found;
+}
+
+void FS_FixFileNames_f (void)
+{
+	if (!FixFileNames("."))
+		Com_Printf ("No uppercase files found.\n", LOG_GENERAL);
+}
+#endif
 
 /*
 ================
@@ -1703,6 +1812,11 @@ void FS_InitFilesystem (void)
 
 	//r1: init fs cache
 	//FS_FlushCache ();
+
+#ifdef LINUX
+	// MH: change uppercase filenames to lowercase on Linux
+	Cmd_AddCommand ("fixfilenames", FS_FixFileNames_f);
+#endif
 
 	//
 	// basedir <path>

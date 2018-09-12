@@ -24,6 +24,116 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 game_export_t	*ge;
 
 
+#if KINGPIN
+#define	TAG_LEVEL	766		// clear when loading a new level
+#define	MAX_OBJECT_BOUNDS	2048
+
+typedef struct
+{
+	int magic;
+	int version;
+	int skinWidth;
+	int skinHeight;
+	int frameSize;
+	int numSkins;
+	int numVertices;
+	int numTriangles;
+	int numGlCommands;
+	int numFrames;
+	int numSfxDefines;
+	int numSfxEntries;
+	int numSubObjects;
+	int offsetSkins;
+	int offsetTriangles;
+	int offsetFrames;
+	int offsetGlCommands;
+	int offsetVertexInfo;
+	int offsetSfxDefines;
+	int offsetSfxEntries;
+	int offsetBBoxFrames;
+	int offsetDummyEnd;
+	int offsetEnd;
+} mdx_head_t;
+
+static int objectc = 0;
+static char *objectbounds_filename[MAX_MODELS];
+static int object_bounds[MAX_MODELS][MAX_MODELPART_OBJECTS];
+
+void EXPORT MDX_ClearObjectBoundsCached(void)
+{
+	objectc = 0;
+}
+
+void EXPORT MDX_GetObjectBounds(const char *mdx_filename, model_part_t *model_part)
+{
+	int i, j;
+	for (i=0; i<objectc; i++)
+	{
+		if (!Q_stricmp(objectbounds_filename[i], mdx_filename))
+			goto ok;
+	}
+	memset(model_part->object_bounds, 0, sizeof(model_part->object_bounds));
+	if (objectc == MAX_MODELS)
+	{
+		Com_Printf ("ERROR: MDX_GetObjectBounds: Reached MAX_MODELS limit, unable to load object-bounds\n", LOG_SERVER|LOG_ERROR);
+		return;
+	}
+	else
+	{
+		void *data;
+		int size = FS_LoadFile(mdx_filename, &data);
+		if (!data)
+		{
+			Com_Printf ("WARNING: MDX_GetObjectBounds: Unable to find MDX file \"%s\", using simple collision detection\n", LOG_SERVER|LOG_WARNING, mdx_filename);
+			return;
+		}
+		else
+		{
+			int *NumObjectBounds = ge->GetNumObjectBounds();
+			void **ObjectBoundsPointer = ge->GetObjectBoundsPointer();
+			mdx_head_t head;
+			for (j=0; j<sizeof(head)/4; j++)
+				((uint32*)&head)[j] = LittleLong(((int32*)data)[j]);
+			if (head.magic != 0x58504449 || head.numSubObjects > MAX_MODELPART_OBJECTS || head.offsetBBoxFrames + head.numSubObjects * head.numFrames * 24 > size)
+			{
+				FS_FreeFile(data);
+				Com_Printf ("ERROR: MDX_GetObjectBounds: Invalid MDX file \"%s\"\n", LOG_SERVER|LOG_ERROR, mdx_filename);
+				return;
+			}
+			if (*NumObjectBounds + head.numSubObjects >= MAX_OBJECT_BOUNDS)
+			{
+				FS_FreeFile(data);
+				Com_Printf ("ERROR: MDX_GetObjectBounds: Out of ObjectBounds items\n", LOG_SERVER|LOG_ERROR);
+				return;
+			}
+			objectbounds_filename[i] = strcpy(Z_TagMallocGame(strlen(mdx_filename)+1, TAG_LEVEL), mdx_filename);
+			memset(object_bounds[i], 0, sizeof(object_bounds[i]));
+			{
+				void *d = Z_TagMallocGame(head.numSubObjects*head.numFrames*24, TAG_LEVEL);
+				memcpy(d, ((char*)data)+head.offsetBBoxFrames, head.numSubObjects*head.numFrames*24);
+				for (j=0; j<head.numSubObjects; j++)
+				{
+					ObjectBoundsPointer[*NumObjectBounds] = ((char*)d)+j*head.numFrames*24;
+					object_bounds[i][j] = ++(*NumObjectBounds);
+				}
+			}
+			FS_FreeFile(data);
+		}
+	}
+	objectc++;
+
+ok:
+	memcpy(model_part->object_bounds, object_bounds[i], sizeof(model_part->object_bounds));
+	model_part->objectbounds_filename = objectbounds_filename[i];
+}
+
+void EXPORT VID_StopRender(void)
+{
+}
+
+void EXPORT SV_SaveNewLevel(void);
+#endif
+
 /*
 ===============
 PF_Unicast
@@ -47,6 +157,18 @@ void EXPORT PF_Unicast (edict_t *ent, qboolean reliable)
 
 		if (sv_gamedebug->intvalue >= 3)
 			Sys_DebugBreak ();
+		return;
+	}
+
+	// MH: check we have data in the buffer
+	if (!MSG_GetLength())
+	{
+		if (sv_gamedebug->intvalue)
+		{
+			Com_Printf ("GAME WARNING: Unicast to client %d with no data in buffer, ignored.\n", LOG_SERVER|LOG_WARNING|LOG_GAMEDEBUG, p-1);
+			if (sv_gamedebug->intvalue >= 2)
+				Sys_DebugBreak ();
+		}
 		return;
 	}
 
@@ -158,7 +280,11 @@ void EXPORT PF_cprintf (edict_t *ent, int level, const char *fmt, ...)
 
 		client = svs.clients + (n-1);
 
+#if KINGPIN
+		if (client->state < cs_connected)
+#else
 		if (client->state != cs_spawned)
+#endif
 		{
 			Com_Printf ("GAME ERROR: cprintf to disconnected client %d, ignored\n", LOG_SERVER|LOG_ERROR|LOG_GAMEDEBUG, n-1);
 
@@ -305,10 +431,17 @@ __inline char *SV_FixPlayerSkin (char *val, char *player_name)
 {
 	static char	fixed_skin[MAX_QPATH];
 
+#if KINGPIN
+	Com_DPrintf ("PF_Configstring: Overriding malformed playerskin '%s' with '%s\\male_thug/009 019 017 0'\n", val, player_name);
+
+	Q_strncpy (fixed_skin, player_name, MAX_QPATH - 30);
+	strcat (fixed_skin, "\\male_thug/009 019 017 0");
+#else
 	Com_DPrintf ("PF_Configstring: Overriding malformed playerskin '%s' with '%s\\male/grunt'\n", val, player_name);
 
 	Q_strncpy (fixed_skin, player_name, MAX_QPATH - 12);
 	strcat (fixed_skin, "\\male/grunt");
+#endif
 
 	return fixed_skin;
 }
@@ -404,10 +537,26 @@ void EXPORT PF_Configstring (int index, char *val)
 		}
 
 		length = strlen (skin_name);
+#if KINGPIN
+		if (length < 13)
+		{
+			Com_DPrintf ("PF_Configstring: Invalid playerskin '%s'\n", val);
+			val = SV_FixPlayerSkin (val, player_name);
+		}
+		else
+#endif
 		for (i = 0; i < length; i++)
 		{
+#if KINGPIN
+			if (i==3 || i==7 || i==11)
+			{
+				if (skin_name[i]==' ') continue;
+				goto bad;
+			}
+#endif
 			if (!isvalidchar(skin_name[i]))
 			{
+bad:
 				Com_DPrintf ("PF_Configstring: Illegal character '%c' in playerskin '%s'\n", skin_name[i], val);
 				val = SV_FixPlayerSkin (val, player_name);
 				break;
@@ -443,10 +592,18 @@ fixed:
 		if (index == CS_STATUSBAR)
 		{
 			//max allowed for statusbar space
+#if KINGPIN
+			if (length > (sizeof(sv.configstrings[0]) * (CS_SERVER_VERSION-CS_STATUSBAR))-1)
+#else
 			if (length > (sizeof(sv.configstrings[0]) * (CS_AIRACCEL-CS_STATUSBAR))-1)
+#endif
 				Com_Error (ERR_DROP, "CS_STATUSBAR configstring %d length %d exceeds maximum allowed length", index, (int)length);
 		}
+#if KINGPIN
+		else if (index > CS_STATUSBAR && index < CS_SERVER_VERSION)
+#else
 		else if (index > CS_STATUSBAR && index < CS_AIRACCEL)
+#endif
 		{
 			//game dll is trying to set status bar one by one, WTF? just error out completely here.
 			Com_Error (ERR_DROP, "CS_STATUSBAR configstring %d length %d exceeds maximum allowed length", index, (int)length);
@@ -456,14 +613,20 @@ fixed:
 			//some map names overflow this - i allow for one index overflow since
 			//its only the cd audio that gets overwritten and seriously, how many maps set cd
 			//audio to something other than 0?
+#if KINGPIN
+			if (length > (sizeof(sv.configstrings[0]) * (CS_DENSITY-CS_NAME))-1)
+#else
 			if (length > (sizeof(sv.configstrings[0]) * (CS_SKY-CS_NAME))-1)
+#endif
 			{
 				Com_Error (ERR_DROP, "Map name exceeds maximum allowed length");
 			}
+#if !KINGPIN
 			else if (length > sizeof(sv.configstrings[CS_NAME])-1)
 			{
 				Com_Printf ("WARNING: Map name exceeds maximum allowed length of 63 characters. R1Q2 will try to accomodate it anyway.\n", LOG_SERVER|LOG_WARNING);
 			}
+#endif
 		}
 		else
 		{
@@ -483,8 +646,10 @@ fixed:
 			if (!track && atoi(sv.configstrings[CS_CDTRACK]) == 0)
 			{
 				Com_Printf ("WARNING: Ignoring CS_CDTRACK to allow for extended map name length\n", LOG_SERVER|LOG_WARNING);
-				index = -1;
-				val = "";
+				// MH: just return here, surely?
+				return;
+/*				index = -1;
+				val = "";*/
 			}
 			else
 			{
@@ -498,6 +663,7 @@ fixed:
 		//shouldn't touch this!
 		Com_Error (ERR_HARD, "Game DLL tried to set CS_MAPCHECKSUM");
 	}
+#if !KINGPIN
 	else if (index == CS_SKYROTATE)
 	{
 		//optimize to save space
@@ -518,6 +684,7 @@ fixed:
 		val = safestring;
 		sprintf (safestring, "%g %g %g", axis[0], axis[1], axis[2]);
 	}
+#endif
 
 	if (!strcmp (sv.configstrings[index], val))
 	{
@@ -669,7 +836,9 @@ qboolean EXPORT PF_inPHS (vec3_t p1, vec3_t p2)
 void EXPORT PF_StartSound (edict_t *entity, int channel, int sound_num, float volume,
     float attenuation, float timeofs)
 {
+#if !KINGPIN
 	vec3_t		neworigin;
+#endif
 
 	if (!entity)
 	{
@@ -692,6 +861,20 @@ void EXPORT PF_StartSound (edict_t *entity, int channel, int sound_num, float vo
 
 	channel &= ~CHAN_SERVER_ATTN_CALC;
 
+#if KINGPIN
+	{
+		// MH: drop curse sounds when parental lock is enabled
+		int p = NUM_FOR_EDICT(entity);
+		if (p >= 1 && p <= maxclients->intvalue && svs.clients[p - 1].nocurse)
+		{
+			const char *path = sv.configstrings[CS_SOUNDS + sound_num];
+			if (((!strncmp(path, "actors/male/", 12) || !strncmp(path, "actors/female/", 14)) && strchr(path + 14, '/')) || !strncmp(path, "actors/player/male/profanity/", 29))
+				return;
+		}
+	}
+#endif
+
+#if !KINGPIN
 	//r1: func_plat and friends trickery
 	if (sv_func_plat_hack->intvalue)
 	{
@@ -736,6 +919,7 @@ void EXPORT PF_StartSound (edict_t *entity, int channel, int sound_num, float vo
 			}
 		}
 	}
+#endif
 
 	SV_StartSound (NULL, entity, channel, sound_num, volume, attenuation, timeofs);
 }
@@ -761,6 +945,9 @@ void SV_ShutdownGameProgs (void)
 	Cvar_ForceSet ("g_features", "0");
 	svs.game_features = 0;
 
+	// MH: disable idle mode
+	Cvar_ForceSet ("g_idle", "0");
+
 	//r1: check all memory from game was cleaned.
 	Z_CheckGameLeaks();
 }
@@ -774,6 +961,9 @@ the multiplier for clients running in the new protocol for fast spectator moveme
 */
 void EXPORT SV_Pmove (pmove_t *pm)
 {
+#if KINGPIN
+	Pmove (pm);
+#else
 	pmove_new_t epm;
 	client_t	*cl;
 
@@ -844,6 +1034,7 @@ void EXPORT SV_Pmove (pmove_t *pm)
 			}
 		}
 	}
+#endif
 }
 
 /*
@@ -923,6 +1114,14 @@ void SV_InitGameProgs (void)
 	import.SetAreaPortalState = CM_SetAreaPortalState;
 	import.AreasConnected = CM_AreasConnected;
 
+#if KINGPIN
+	import.skinindex = SV_SkinIndex;
+	import.ClearObjectBoundsCached = MDX_ClearObjectBoundsCached;
+	import.StopRender = VID_StopRender;
+	import.GetObjectBounds = MDX_GetObjectBounds;
+	import.SaveCurrentGame = SV_SaveNewLevel;
+#endif
+
 	ge = (game_export_t *)Sys_GetGameAPI (&import, sv.attractloop);
 
 	if (!ge)
@@ -935,7 +1134,11 @@ void SV_InitGameProgs (void)
 		//note, don't call usual unloadgame since that executes DLL code (which is invalid)
 		Sys_UnloadGame ();
 		ge = NULL;
+#if KINGPIN
+		Com_Error (ERR_HARD, "Game is API version %i (not supported).", i);
+#else
 		Com_Error (ERR_HARD, "Game is API version %i (not supported by this version R1Q2).", i);
+#endif
 		return;
 	}
 
@@ -955,15 +1158,26 @@ void SV_InitGameProgs (void)
 	{
 		svs.game_features = g_features->intvalue;
 		Com_Printf ("Extended game features enabled:%s%s%s%s\n", LOG_SERVER,
+#if KINGPIN
+			svs.game_features & GMF_CLIENTPOV ? " GMF_CLIENTPOV" : "", 
+#else
 			svs.game_features & GMF_CLIENTNUM ? " GMF_CLIENTNUM" : "", 
+#endif
 			svs.game_features & GMF_WANT_ALL_DISCONNECTS ? " GMF_WANT_ALL_DISCONNECTS" : "", 
+#if KINGPIN
+			svs.game_features & GMF_CLIENTTEAM ? " GMF_CLIENTTEAM" : "",
+			svs.game_features & GMF_CLIENTNOENTS ? " GMF_CLIENTNOENTS" : "");
+#else
 			svs.game_features & GMF_PROPERINUSE ? " GMF_PROPERINUSE" : "", 
 			svs.game_features & GMF_MVDSPEC ? " GMF_MVDSPEC" : "");
+#endif
 	}
 	else
 		svs.game_features = 0;
 
+#if !KINGPIN
 	memset (&svs.entities, 0, sizeof(svs.entities));
+#endif
 
 	//r1: moved from SV_InitGame to here.
 	for (i=0 ; i<maxclients->intvalue ; i++)

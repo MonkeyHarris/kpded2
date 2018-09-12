@@ -48,7 +48,9 @@ typedef struct areanode_s
 #define	AREA_DEPTH	4
 #define	AREA_NODES	32
 
+#if !KINGPIN
 unsigned int		sv_tracecount;
+#endif
 
 static areanode_t	sv_areanodes[AREA_NODES];
 static int			sv_numareanodes;
@@ -239,15 +241,34 @@ void EXPORT SV_LinkEdict (edict_t *ent)
 		}
 	}
 
-	
+#if KINGPIN
+	// MH: check num_parts and modelindex aren't both used
+	if (ent->s.num_parts && ent->s.modelindex && ent->s.modelindex != 255)
+	{
+		if (sv_gamedebug->intvalue)
+		{
+			Com_Printf ("GAME WARNING: Entity %d has s.num_parts and s.modelindex set, clearing modelindex\n", LOG_SERVER|LOG_WARNING|LOG_GAMEDEBUG, edict_number);
+			if (sv_gamedebug->intvalue >= 4)
+				Sys_DebugBreak ();
+		}
+		ent->s.modelindex = 0;
+	}
+#endif
+
 	// encode the size into the entity_state for client prediction
+#if KINGPIN
+	if (ent->solid == SOLID_BBOX && !((ent->svflags & SVF_DEADMONSTER)))
+#else
 	if (ent->solid == SOLID_BBOX && !((ent->svflags & SVF_DEADMONSTER) || (sv_new_entflags->intvalue && (ent->svflags & SVF_NOPREDICTION))))
+#endif
 	{	
 		//special case projectile hack
 		if (VectorCompare (ent->mins, vec3_origin) && VectorCompare (ent->maxs, vec3_origin))
 		{
 			ent->s.solid = 0;
+#if !KINGPIN
 			svs.entities[edict_number].solid2 = 0;
+#endif
 		}
 		else
 		{
@@ -309,6 +330,7 @@ void EXPORT SV_LinkEdict (edict_t *ent)
 
 			ent->s.solid = (k<<10) | (j<<5) | i;
 
+#if !KINGPIN
 			//now calculate our special value for R1Q2 protocol for full precision bboxes. NASTY HACK! since we can't
 			//alter edict_t, there is a new private entity struct for the server :(.
 
@@ -334,17 +356,22 @@ void EXPORT SV_LinkEdict (edict_t *ent)
 				k = 65535;
 
 			svs.entities[edict_number].solid2 = (k<<16) | (j<<8) | i;
+#endif
 		}
 	}
 	else if (ent->solid == SOLID_BSP)
 	{
 		ent->s.solid = 31;		// a solid_bbox will never create this value
+#if !KINGPIN
 		svs.entities[edict_number].solid2 = 31;
+#endif
 	}
 	else
 	{
 		ent->s.solid = 0;
+#if !KINGPIN
 		svs.entities[edict_number].solid2 = 0;
+#endif
 	}
 
 	// set the abs box
@@ -776,6 +803,7 @@ trace_t EXPORT SV_Trace (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, edi
 
 	memset ( &clip, 0, sizeof ( moveclip_t ) );
 
+#if !KINGPIN
 	//r1: server-side hax for bad looping traces
 	if (++sv_tracecount >= sv_max_traces_per_frame->intvalue)
 	{
@@ -792,6 +820,7 @@ trace_t EXPORT SV_Trace (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, edi
 		sv_tracecount = 0;
 		return clip.trace;
 	}
+#endif
 
 	// clip to world
 	clip.trace = CM_BoxTrace (start, end, mins, maxs, 0, contentmask);

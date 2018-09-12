@@ -30,6 +30,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	MAX_MASTERS	8				// max recipients for heartbeat packets
 
+// MH: global master server
+#if KINGPIN
+#define GLOBAL_MASTER "master.kingpin.info:27900"
+#else
+#define GLOBAL_MASTER "master.q2servers.com:27900"
+#endif
+
 #define	CMDBAN_MESSAGE		0
 #define	CMDBAN_KICK			1
 #define	CMDBAN_SILENT		2
@@ -72,6 +79,11 @@ extern linkednamelist_t		nullcmds;
 extern linkednamelist_t		lrconcmds;
 extern linkedvaluelist_t	serveraliases;
 
+#if KINGPIN
+// MH: downloadable client files
+extern linkednamelist_t		clientfiles;
+#endif
+
 extern	char svConnectStuffString[1100];
 extern	char svBeginStuffString[1100];
 
@@ -92,6 +104,10 @@ typedef struct
 	struct cmodel_s		*models[MAX_MODELS];
 
 	char		configstrings[MAX_CONFIGSTRINGS][MAX_QPATH];
+#if KINGPIN
+	// MH: downloadable files
+	char		dlconfigstrings[MAX_IMAGES][MAX_QPATH];
+#endif
 
 	//r1: pointer now (since each client now has their own set) - this avoids
 	//having a stupid 17mb [MAX_CLIENTS][MAX_EDICTS] array.
@@ -148,6 +164,23 @@ typedef struct
 	vec3_t	origin_saved;
 } pmovestatus_t;
 
+#if KINGPIN
+// MH: compressed/cached download
+typedef struct download_t
+{
+	struct download_t *next;
+	char *name;
+	time_t mtime;
+	int size;
+	int offset;
+	int compsize;
+	byte *compbuf;
+	int refc;
+	int fd;
+	intptr_t thread;
+} download_t;
+#endif
+
 typedef struct client_s
 {
 	serverclient_state_t	state;
@@ -171,6 +204,11 @@ typedef struct client_s
 	char			name[16];			// extracted from userinfo, high bits masked
 	int				messagelevel;		// for filtering printed messages
 
+#if KINGPIN
+	char			skin[MAX_QPATH];	// MH: current skin
+	char			badmodel[MAX_QPATH];	// MH: bad model name
+#endif
+
 	// The datagram is written to by sound calls, prints, temp ents, etc.
 	// It can be harmlessly overflowed.
 	//sizebuf_t		datagram;
@@ -178,12 +216,22 @@ typedef struct client_s
 
 	client_frame_t	frames[UPDATE_BACKUP];	// updates can be delta'd from here
 
-	byte			*download;			// file being downloaded
+	FILE			*download;			// file being downloaded (MH: changed void* to FILE*)
+	int				downloadstart;		// MH: file start offset (for paks)
 	int				downloadsize;		// total bytes (can't use EOF because of paks)
 	int		 		downloadcount;		// bytes sent
-	
+#if KINGPIN
+	uint32			downloadid;			// MH: download request ID
+	int		 		downloadoffset;		// MH: download request offset
+	int				downloadpos;		// MH: download position
+	int				downloadrate;		// MH: download rate (KB/s)
+	float			downloadtokens;		// MH: download tokens (to enforce rate)
+	download_t		*downloadcache;		// MH: compressed/cached file
+	qboolean		downloadpak;		// MH: download is a pak
+#else
 	//r1: compress downloads?
 	qboolean		downloadCompressed;
+#endif
 
 	char			*downloadFileName;
 
@@ -196,6 +244,17 @@ typedef struct client_s
 	//r1: client protocol
 	uint32	 		protocol;
 	uint32			protocol_version;
+
+#if KINGPIN
+	// MH: patch version (MH's Kingpin Patch)
+	uint32			patched;
+
+	// MH: compression enabled
+	qboolean		compress;
+
+	// MH: curse sounds disabled
+	uint32			nocurse;
+#endif
 
 	//r1: number of times they've commandMsec underflowed (if this gets excessive then
 	//they can be dropped)
@@ -222,8 +281,10 @@ typedef struct client_s
 	//r1: number of frames since last activity
 	int							idletime;
 
+#if !KINGPIN
 	//r1: version string
 	char						*versionString;
+#endif
 
 	char						reconnect_var[32];
 	char						reconnect_value[32];
@@ -235,13 +296,17 @@ typedef struct client_s
 
 	qboolean					moved;
 
+#if !KINGPIN
 	unsigned long				settings[CLSET_MAX];
+#endif
 	unsigned					totalMsecUsed;
 	unsigned					initialRealTime;
 
+#if !KINGPIN
 	int							timeSkewTotal;
 	int							timeSkewSamples;
 	int							timeSkewLastDiff;
+#endif
 
 #ifdef ANTICHEAT
 	qboolean					anticheat_valid;
@@ -254,22 +319,38 @@ typedef struct client_s
 	const char					*anticheat_token;
 	int							anticheat_client_type;
 #endif
-	int							beginspawncount;
+	int							spawncount;
 
-	unsigned					pl_dropped_packets;
-	unsigned					pl_sent_packets;
-	unsigned					pl_last_packet_frame;
-
-	unsigned					min_ping, avg_ping_count, avg_ping_time, max_ping;
+#if !KINGPIN
 	unsigned					last_incoming_sequence;
 	unsigned					player_updates_sent;
+#endif
 
 	pmovestatus_t				current_move;
 
+#if !KINGPIN
 	char						*cheaternet_message;
 
 	//ugly hack for variable FPS support dropping s.event
 	int							entity_events[MAX_EDICTS];
+#endif
+
+	// MH: last layout message (to avoid sending duplicates)
+	char			layout[1024];
+	int				layout_unreliable;
+
+	// MH: cl_maxfps value for sv_fpsflood/sv_minpps checks
+	int				cl_maxfps;
+	unsigned		lastfpscheck;
+
+#if KINGPIN
+	// MH: connection quality
+	float			quality;
+#endif
+
+	// MH: demo recording
+	FILE			*demofile;
+	unsigned		demostart;
 } client_t;
 
 // a client can leave the server in one of four ways:
@@ -292,11 +373,13 @@ typedef struct
 	uint32	 	time;
 } challenge_t;
 
+#if !KINGPIN
 //extra struct for server-private entity information
 typedef struct
 {
 	int32	solid2;
 } sventity_t;
+#endif
 
 typedef struct
 {
@@ -337,7 +420,12 @@ typedef struct
 	unsigned long		r1q2AttnBytes;
 #endif
 
+#if !KINGPIN
 	sventity_t			entities[MAX_EDICTS];
+#endif
+
+	// MH: frame timing quality
+	float				timing;
 
 	int					game_features;
 } server_static_t;
@@ -359,10 +447,14 @@ extern	server_t		sv;					// local server
 extern	cvar_t		*sv_paused;
 extern	cvar_t		*maxclients;
 extern	cvar_t		*sv_noreload;			// don't reload level state when reentering
+#if !KINGPIN
 extern	cvar_t		*sv_airaccelerate;		// don't reload level state when reentering
+#endif
 											// development tool
 extern	cvar_t		*sv_max_download_size;
+#if !KINGPIN
 extern	cvar_t		*sv_downloadserver;
+#endif
 
 extern	cvar_t		*sv_nc_visibilitycheck;
 extern	cvar_t		*sv_nc_clientsonly;
@@ -373,12 +465,16 @@ extern	cvar_t		*sv_enforcetime;
 
 extern	cvar_t		*sv_randomframe;
 
+#if !KINGPIN
 extern	cvar_t		*sv_nc_kick;
 extern	cvar_t		*sv_nc_announce;
 extern	cvar_t		*sv_filter_nocheat_spam;
+#endif
 
 extern	cvar_t		*sv_recycle;
+#if !KINGPIN
 extern	cvar_t		*sv_strafejump_hack;
+#endif
 
 extern	cvar_t		*sv_allow_map;
 extern	cvar_t		*sv_allow_unconnected_cmds;
@@ -386,7 +482,9 @@ extern	cvar_t		*sv_allow_unconnected_cmds;
 extern	cvar_t		*sv_mapdownload_denied_message;
 extern	cvar_t		*sv_mapdownload_ok_message;
 
+#if !KINGPIN
 extern	cvar_t		*sv_new_entflags;
+#endif
 
 extern	cvar_t		*sv_validate_playerskins;
 
@@ -417,14 +515,20 @@ extern	cvar_t		*sv_predict_on_lag;
 extern	cvar_t		*sv_format_string_hack;
 
 extern	cvar_t		*sv_lag_stats;
+#if !KINGPIN
 extern	cvar_t		*sv_func_plat_hack;
+#endif
 extern	cvar_t		*sv_max_packetdup;
 
+#if !KINGPIN
 extern	cvar_t		*sv_max_player_updates;
+#endif
 
 extern	cvar_t		*sv_disconnect_hack;
 
+#if !KINGPIN
 extern	cvar_t		*sv_interpolated_pmove;
+#endif
 
 extern	cvar_t		*sv_global_master;
 
@@ -438,8 +542,36 @@ extern	cvar_t	*allow_download_models;
 extern	cvar_t	*allow_download_sounds;
 extern	cvar_t	*allow_download_maps;
 extern	cvar_t	*allow_download_pics;
+#if KINGPIN
+extern	cvar_t	*allow_download_paks;
+#else
 extern	cvar_t	*allow_download_textures;
 extern	cvar_t	*allow_download_others;
+#endif
+
+// MH: for cl_maxfps checks
+extern cvar_t	*sv_fpsflood;
+extern cvar_t	*sv_minpps;
+
+// MH: disable fov zooming
+extern cvar_t	*sv_no_zoom;
+
+// MH: minimize memory usage
+extern cvar_t	*sv_minimize_memory;
+
+#if KINGPIN
+// MH: compression level
+extern cvar_t	*sv_compress;
+
+// MH: compression level for downloads
+extern cvar_t	*sv_compress_downloads;
+
+// MH: pre-cache downloads to the system file cache
+extern	cvar_t	*sv_download_precache;
+
+// MH: upstream bandwidth available
+extern	cvar_t	*sv_bandwidth;
+#endif
 
 //===========================================================
 
@@ -449,6 +581,7 @@ extern	cvar_t	*allow_download_others;
 #define	NOTE_OVERFLOWED		0x2
 #define	NOTE_OVERFLOW_DONE	0x4
 #define	NOTE_DROPME			0x8
+#define	NOTE_NAMECLASH		0x10 // MH: name was changed due to a clash
 
 //
 // sv_main.c
@@ -460,6 +593,10 @@ void SV_KickClient (client_t *cl, const char /*@null@*/*reason, const char /*@nu
 int EXPORT SV_ModelIndex (const char *name);
 int EXPORT SV_SoundIndex (const char *name);
 int EXPORT SV_ImageIndex (const char *name);
+
+#if KINGPIN
+int EXPORT SV_SkinIndex (int modelindex, const char *name);
+#endif
 
 void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg);
 
@@ -481,6 +618,9 @@ extern cvar_t	*sv_allownodelta;
 extern cvar_t	*sv_deny_q2ace;
 
 extern cvar_t	*sv_gamedebug;
+#if !KINGPIN
+extern cvar_t	*sv_calcpings_method;
+
 extern cvar_t	*sv_packetentities_hack;
 
 extern cvar_t	*sv_optimize_deltas;
@@ -489,6 +629,7 @@ extern cvar_t	*sv_cheaternet;
 extern cvar_t	*sv_disallow_download_sprites_hack;
 
 extern cvar_t	*sv_fps;
+#endif
 
 //void Master_Heartbeat (void);
 //void Master_Packet (void);
@@ -513,6 +654,12 @@ void Sys_DeleteService (char *servername);
 void Sys_EnableTray (void);
 void Sys_DisableTray (void);
 void Sys_Minimize (void);
+void Sys_Title (char *title);
+
+void Sys_AcquireConsoleMutex (void);
+void Sys_ReleaseConsoleMutex (void);
+
+extern cvar_t	*win_priority;
 #endif
 
 void Blackhole (netadr_t *from, qboolean isAutomatic, int mask, int method, const char *fmt, ...) __attribute__ ((format (printf, 5, 6)));
@@ -563,10 +710,23 @@ void SV_ClearMessageList (client_t *client);
 void SV_Nextserver (void);
 void SV_ExecuteClientMessage (client_t *cl);
 
+// MH: close a download
+void SV_CloseDownload(client_t *cl);
+
+#if KINGPIN
+void ClearCachedDownloads();
+void PushDownload (client_t *cl, qboolean start);
+int GetDownloadRate();
+#endif
+
 //
 // sv_ccmds.c
 //
 void SV_ReadLevelFile (void);
+
+// MH: client demo
+void SV_WriteClientDemoServerData (client_t *client);
+void SV_WriteClientDemoMessage (client_t *client, int length, const byte *data);
 
 //
 // sv_ents.c
@@ -803,3 +963,13 @@ extern cvar_t	*g_features;
 
 // inform game DLL of disconnects between level changes
 #define GMF_WANT_ALL_DISCONNECTS 8
+
+#if KINGPIN
+#define GMF_CLIENTPOV		GMF_CLIENTNUM
+
+// server is able to read team field from gclient_s struct to include in Gamespy status request replies
+#define GMF_CLIENTTEAM		0x100
+
+// server is able to read noents field from gclient_s struct to send no entities to client
+#define GMF_CLIENTNOENTS	0x200
+#endif

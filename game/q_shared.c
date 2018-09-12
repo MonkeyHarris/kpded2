@@ -791,10 +791,10 @@ vec_t VectorNormalize (vec3_t v)
 	float	length, ilength;
 
 	length = v[0]*v[0] + v[1]*v[1] + v[2]*v[2];
-	length = (float)sqrt (length);		// FIXME
 
 	if (FLOAT_NE_ZERO(length))
 	{
+		length = (float)sqrt (length);
 		ilength = 1/length;
 		v[0] *= ilength;
 		v[1] *= ilength;
@@ -810,10 +810,10 @@ vec_t VectorNormalize2 (vec3_t v, vec3_t out)
 	float	length, ilength;
 
 	length = v[0]*v[0] + v[1]*v[1] + v[2]*v[2];
-	length = (float)sqrt (length);		// FIXME
 
 	if (FLOAT_NE_ZERO(length))
 	{
+		length = (float)sqrt (length);
 		ilength = 1/length;
 		out[0] = v[0]*ilength;
 		out[1] = v[1]*ilength;
@@ -876,7 +876,7 @@ vec_t VectorLength(vec3_t v)
 	length += v[1]*v[1];
 	length += v[2]*v[2];
 
-	length = (float)sqrtf (length);		// FIXME
+	length = (float)sqrt (length);		// FIXME
 
 	return length;
 }
@@ -1323,20 +1323,18 @@ int Com_sprintf (char /*@out@*/*dest, int size, const char *fmt, ...)
 {
 	int			len;
 	va_list		argptr;
-	char		bigbuffer[0x10000];
 
+	// MH: write directly to dest
 	va_start (argptr,fmt);
-	len = Q_vsnprintf (bigbuffer, sizeof(bigbuffer), fmt, argptr);
+	len = Q_vsnprintf (dest, size, fmt, argptr);
 	va_end (argptr);
 
 	if (len == -1 || len == size)
 	{
 		Com_Printf ("Com_sprintf: overflow of size %d\n", LOG_GENERAL, size);
 		len = size-1;
+		dest[size-1] = 0;
 	}
-
-	bigbuffer[size-1] = '\0';
-	strcpy (dest, bigbuffer);
 
 	return len;
 }
@@ -1554,7 +1552,8 @@ void Info_SetValueForKey (char *s, const char *key, const char *value)
 
 	Com_sprintf (newi, sizeof(newi), "\\%s\\%s", key, value);
 
-	if (strlen(newi) + strlen(s) > MAX_INFO_STRING)
+	// MH: fixed to count terminating NULL
+	if (strlen(newi) + strlen(s) > MAX_INFO_STRING-1)
 	{
 		Com_Printf ("Info string length exceeded while trying to set '%s'\n", LOG_GENERAL, newi);
 		return;

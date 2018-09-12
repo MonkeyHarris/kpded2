@@ -41,7 +41,11 @@ static uint64 net_packets_out;
 static cvar_t	*net_rcvbuf;
 static cvar_t	*net_sndbuf;
 
+#if KINGPIN
+static SOCKET		ip_sockets[3] = {0}; // MH: extra socket for Gamespy status requests
+#else
 static SOCKET		ip_sockets[2];
+#endif
 int			server_port;
 //int			ipx_sockets[2];
 
@@ -306,10 +310,16 @@ int NET_IPSocket (char *net_interface, int port)
 		return 0;
 	}
 
-	//r1: set 'interactive' ToS
-	i = 0x10;
-	if (setsockopt(newsocket, IPPROTO_IP, IP_TOS, (char *)&i, sizeof(i)) == -1)
-		Com_Printf ("WARNING: UDP_OpenSocket: setsockopt IP_TOS: %s\n", LOG_NET, NET_ErrorString());
+#if KINGPIN
+	// MH: don't bother with TOS on Gamespy status socket
+	if (port != server_port - 10)
+#endif
+	{
+		//r1: set 'interactive' ToS
+		i = 0x10;
+		if (setsockopt(newsocket, IPPROTO_IP, IP_TOS, (char *)&i, sizeof(i)) == -1)
+			Com_Printf ("WARNING: UDP_OpenSocket: setsockopt IP_TOS: %s\n", LOG_NET, NET_ErrorString());
+	}
 
 	if (!net_interface || !net_interface[0] || !Q_stricmp(net_interface, "localhost"))
 		address.sin_addr.s_addr = INADDR_ANY;

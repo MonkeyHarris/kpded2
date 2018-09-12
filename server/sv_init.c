@@ -49,6 +49,19 @@ int SV_FindIndex (const char *name, int start, int maxIndex, qboolean create)
 		return 0;
 	}
 
+#if KINGPIN
+	// MH: index images in reverse to avoid overlap with downloadables as much as possible
+	if (start == CS_IMAGES)
+	{
+		for (i=maxIndex-1 ; i>0 && sv.configstrings[start+i][0] ; i--)
+		{
+			if (!strcmp(sv.configstrings[start+i], name))
+				return i;
+		}
+		if (!i) i = maxIndex;
+	}
+	else
+#endif
 	for (i=1 ; i<maxIndex && sv.configstrings[start+i][0] ; i++)
 	{
 		if (!strcmp(sv.configstrings[start+i], name)) {
@@ -118,6 +131,227 @@ int SV_FindIndex (const char *name, int start, int maxIndex, qboolean create)
 }
 
 
+#if KINGPIN
+/*
+	MH: The Kingpin client can download models/skins/maps/textures but its support for
+	sounds/images/skies is broken. The broken image download support can be taken
+	advantage of though to allow those things to be downloaded, which is what the
+	code below does. The "imageindex" function can be used by the game to add any
+	files to the downloadable list (only files starting with "/pics/" will be added
+	to the image list).
+	
+	When a client connects,	the server sends the downloadable files list in place
+	of the image list. The image list is then sent when the client has finished
+	connecting.
+*/
+
+static void DownloadIndex(const char *name)
+{
+	// some common files that the player should already have
+	static const char *ignore_sound[] = {
+		"actors/player/male/fry.wav",
+		"actors/player/male/gasp1.wav",
+		"actors/player/male/gasp2.wav",
+		"misc/w_pkup.wav",
+		"weapons/bullethit_tin.wav",
+		"weapons/bullethit_tin2.wav",
+		"weapons/bullethit_tin3.wav",
+		"weapons/machinegun/machgf1b.wav",
+		"weapons/melee/swing.wav",
+		"weapons/pistol/silencer.wav",
+		"weapons/pistol/silencerattatch.wav",
+		"weapons/ric1.wav",
+		"weapons/ric2.wav",
+		"weapons/ric3.wav",
+		"weapons/shotgun/shotgf1b.wav",
+		"weapons/shotgun/shotgr1b.wav",
+		"world/amb_wind.wav",
+		"world/city.wav",
+		"world/citybg.wav",
+		"world/citybglow.wav",
+		"world/citybglow2.wav",
+		"world/crate1.wav",
+		"world/crate2.wav",
+		"world/crate3.wav",
+		"world/doors/dr1_end.wav",
+		"world/doors/dr1_mid.wav",
+		"world/doors/dr1_strt.wav",
+		"world/doors/dr2_endb.wav",
+		"world/doors/dr2_mid.wav",
+		"world/doors/dr2_strt.wav",
+		"world/doors/dr3_endb.wav",
+		"world/doors/dr3_mid.wav",
+		"world/doors/dr3_strt.wav",
+		"world/fire.wav",
+		"world/fire_sm.wav",
+		"world/lightf_broke.wav",
+		"world/lightf_broker.wav",
+		"world/lightf_hum.wav",
+		"world/lightf_hum2.wav",
+		"world/pickups/ammo.wav",
+		"world/pickups/generic.wav",
+		"world/pickups/health.wav",
+		"world/plats/pt1_end.wav",
+		"world/plats/pt1_mid.wav",
+		"world/plats/pt1_strt.wav",
+		"world/switches/butn2.wav",
+		"world/trash1.wav",
+		"world/trash2.wav",
+		"world/trash3.wav",
+		NULL
+	};
+
+	char lwrname[MAX_QPATH], *ext;
+	int i;
+
+	// only add to the downloadable files list during the map loading phase
+	if (!allow_download->intvalue || sv.state != ss_loading)
+		return;
+	if (!name || !name[0] || strlen(name) >= sizeof(lwrname))
+		return;
+	strcpy(lwrname, name);
+	Q_strlwr(lwrname);
+
+	ext = strrchr(lwrname, '.');
+	if (ext && (!strcmp(ext+1, "dll") || !strcmp(ext+1, "exe")))
+	{
+		Com_Printf ("WARNING: '%s' will not be downloadable because it is an executable.\n", LOG_SERVER|LOG_WARNING, lwrname);
+		return;
+	}
+
+	if (!strchr(lwrname, '/') && !Cvar_VariableString("clientdir")[0])
+	{
+		Com_Printf ("WARNING: '%s' will not be downloadable because it is not in a subdirectory.\n", LOG_SERVER|LOG_WARNING, lwrname);
+		return;
+	}
+
+	if (!strncmp(lwrname, "pics/", 5))
+	{
+		if (ext && !strcmp(ext, ".tga") && !strncmp(lwrname+5, "h_", 2))
+			return;
+	}
+	else if (!strncmp(lwrname, "sound/", 6))
+	{
+		for (i=0; ignore_sound[i]; i++)
+			if (!strcmp(lwrname+6, ignore_sound[i]))
+				return;
+	}
+
+	// don't add files that are in a PAK
+	if (FS_LoadFile(lwrname, NULL) > 0 && lastpakfile)
+		return;
+
+	for (i=0; i<MAX_IMAGES && sv.dlconfigstrings[i][0]; i++)
+		if (!strcmp(sv.dlconfigstrings[i], lwrname))
+			return;
+	if (i == MAX_IMAGES)
+	{
+		Com_Printf ("WARNING: Ran out of download configstrings while attempting to add '%s'\n", LOG_SERVER|LOG_WARNING, lwrname);
+		return;
+	}
+
+	strcpy(sv.dlconfigstrings[i], lwrname);
+}
+
+int EXPORT SV_ModelIndex (const char *name)
+{
+	char lwrname[MAX_QPATH];
+	int i;
+
+	if (!name || !name[0] || strlen(name) >= sizeof(sv.configstrings[0]))
+		return 0;
+	strcpy(lwrname, name);
+	Q_strlwr(lwrname);
+
+	i = SV_FindIndex (lwrname, CS_MODELS, MAX_MODELS, true);
+	if (i && !strncmp(lwrname, "models/objects/", 15))
+	{
+		// Kingpin doesn't auto-download model skins, so add them to downloadable files list
+		void *data;
+		FS_LoadFile(lwrname, &data);
+		if (data)
+		{
+			dmdl_t *pheader = (dmdl_t*)data;
+			if (LittleLong(pheader->ident) == IDALIASHEADER && LittleLong(pheader->version) == ALIAS_VERSION)
+			{
+				int a, ns = LittleLong(pheader->num_skins);
+				for (a=0; a<ns; a++)
+					DownloadIndex((char*)data + LittleLong(pheader->ofs_skins) + a * MAX_SKINNAME);
+			}
+			FS_FreeFile(data);
+		}
+	}
+	return i;
+}
+
+int EXPORT SV_SoundIndex (const char *name)
+{
+	char lwrname[MAX_QPATH];
+	int i;
+
+	if (!name || !name[0] || strlen(name) >= sizeof(lwrname))
+		return 0;
+	strcpy(lwrname, name);
+	Q_strlwr(lwrname);
+
+	i = SV_FindIndex (lwrname, CS_SOUNDS, MAX_SOUNDS, true);
+	if (i && lwrname[0] != '*')
+	{
+		char buf[MAX_QPATH + 1];
+		Com_sprintf(buf, sizeof(buf), "sound/%s", lwrname);
+		DownloadIndex(buf);
+	}
+	return i;
+}
+
+int EXPORT SV_ImageIndex (const char *name)
+{
+	char lwrname[MAX_QPATH];
+	int i;
+
+	if (!name || !name[0] || !strchr(name+1,'/') || strlen(name) >= sizeof(lwrname))
+		return 0;
+	strcpy(lwrname, name);
+	Q_strlwr(lwrname);
+
+	// Kingpin always begins image files with "/pics/"
+	if (!strncmp(lwrname, "/pics/", 6))
+		i = SV_FindIndex (lwrname, CS_IMAGES, MAX_IMAGES, true);
+	else
+		i = 0;
+	DownloadIndex(lwrname[0] == '/' ? lwrname+1 : lwrname);
+	return i;
+}
+
+int	EXPORT SV_SkinIndex(int modelindex, const char *name)
+{
+	char lwrname[MAX_QPATH];
+	int i, len, len2;
+
+	len = strlen(name);
+	if ((uint32)modelindex > MAX_MODELS || len >= sizeof(lwrname))
+		return 0;
+	strcpy(lwrname, name);
+	Q_strlwr(lwrname);
+
+	len2 = strlen(sv.configstrings[CS_MODELSKINS + modelindex]);
+	for (i=0; i<len2; i++)
+		if (!strncmp(sv.configstrings[CS_MODELSKINS + modelindex] + i, lwrname, len))
+			return i;
+
+	strcpy(sv.configstrings[CS_MODELSKINS + modelindex] + i, lwrname);
+
+	if (sv.state != ss_loading)
+	{
+		MSG_BeginWriting (svc_configstring);
+		MSG_WriteShort (CS_MODELSKINS + modelindex);
+		MSG_WriteString (sv.configstrings[CS_MODELSKINS + modelindex]);
+		MSG_WriteByte (len);
+		SV_Multicast (NULL, MULTICAST_ALL_R);
+	}
+	return i;
+}
+#else
 int EXPORT SV_ModelIndex (const char *name)
 {
 	return SV_FindIndex (name, CS_MODELS, MAX_MODELS, true);
@@ -132,6 +366,7 @@ int EXPORT SV_ImageIndex (const char *name)
 {
 	return SV_FindIndex (name, CS_IMAGES, MAX_IMAGES, true);
 }
+#endif
 
 /*
 =================
@@ -195,7 +430,14 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 	int			i;
 	uint32		checksum;
 	char		*cmd;
+	char		playerskins[MAX_CLIENTS][MAX_QPATH];
 
+#if KINGPIN
+	// clear download cache
+	ClearCachedDownloads();
+#endif
+
+#if !KINGPIN
 	//r1: get latched vars
 	if (Cvar_GetNumLatchedVars() || sv_recycle->intvalue)
 	{
@@ -205,8 +447,12 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 		if (sv_recycle->intvalue != 2)
 			Cvar_ForceSet ("sv_recycle", "0");
 	}
+#endif
 
 	Cvar_ForceSet ("$mapname", server);
+
+	// MH: disable idle mode
+	Cvar_ForceSet ("g_idle", "0");
 
 #ifndef DEDICATED_ONLY
 	if (dedicated->intvalue)
@@ -232,7 +478,7 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 
 	Com_Printf ("------- Server Initialization -------\n", LOG_SERVER);
 
-	Com_DPrintf ("SpawnServer: %s\n", server);
+	Com_Printf ("SpawnServer: %s\n", LOG_DEBUG, server); // MH: changed from Com_DPrintf
 	if (sv.demofile)
 		fclose (sv.demofile);
 
@@ -243,14 +489,19 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 	if (dedicated->intvalue && (svs.spawncount % 10) == 0)
 	{
 		if (sv_global_master->intvalue)
-			NET_StringToAdr ("master.q2servers.com:27900", &master_adr[0]);
+			NET_StringToAdr (GLOBAL_MASTER, &master_adr[0]);
 
+#if !KINGPIN
 		if (sv_cheaternet->intvalue)
 			NET_StringToAdr ("query.anticheat.r1ch.net:27930", &cheaternet_adr);
+#endif
 	}
 
 	sv.state = ss_dead;
 	Com_SetServerState (sv.state);
+
+	// MH: retain player skins for downloads at start of new map
+	memcpy(playerskins, sv.configstrings[CS_PLAYERSKINS], sizeof(playerskins));
 
 	// wipe the entire per-level structure
 	memset (&sv, 0, sizeof(sv));
@@ -266,6 +517,9 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 	// save name for levels that don't set message
 	strncpy (sv.configstrings[CS_NAME], server, sizeof(sv.configstrings[CS_NAME])-1);
 
+#if KINGPIN
+	strcpy (sv.configstrings[CS_SERVER_VERSION], "200"); // 2.00
+#else
 	if (Cvar_IntValue ("deathmatch"))
 	{
 		Com_sprintf(sv.configstrings[CS_AIRACCEL], sizeof(sv.configstrings[CS_AIRACCEL]), "%d", sv_airaccelerate->intvalue);
@@ -276,6 +530,7 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 		strcpy(sv.configstrings[CS_AIRACCEL], "0");
 		pm_airaccelerate = false;
 	}
+#endif
 
 	//SZ_Init (&sv.multicast, sv.multicast_buf, sizeof(sv.multicast_buf));
 
@@ -289,6 +544,16 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 			svs.clients[i].state = cs_connected;
 		svs.clients[i].lastframe = -1;
 		svs.clients[i].packetCount = 0;
+
+		// MH: retain player skins for downloads at start of new map
+		if (svs.clients[i].state == cs_connected)
+			strcpy(sv.configstrings[CS_PLAYERSKINS + i], playerskins[i]);
+
+		// MH: clear layout message buffer
+		svs.clients[i].layout[0] = 0;
+
+		// MH: don't count acks during reconnect
+		svs.clients[i].netchan.countacks = false;
 	}
 
 	sv.time = 1000;
@@ -302,18 +567,22 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 	}
 	else
 	{
+#if !KINGPIN
 		char	*p;
+#endif
 		Com_sprintf (sv.configstrings[CS_MODELS+1],sizeof(sv.configstrings[CS_MODELS+1]),
 			"maps/%s.bsp", server);
 		sv.models[1] = CM_LoadMap (sv.configstrings[CS_MODELS+1], false, &checksum);
 
 		//FUCKING HUGE AND UGLY hack to allow map overriding
 		strcpy (sv.configstrings[CS_MODELS+1], CM_MapName());
+#if !KINGPIN // MH: this code doesn't seem to be necessary?
 		strcpy (sv.name, CM_MapName() + 5);
 		p = strrchr(sv.name, '.');
 		if (!p)
 			Com_Error (ERR_DROP, "Aiee, sv.name is missing its period: %s", sv.name);
 		p[0] = 0;
+#endif
 	}
 
 	Com_sprintf (sv.configstrings[CS_MAPCHECKSUM],sizeof(sv.configstrings[CS_MAPCHECKSUM]),
@@ -340,6 +609,42 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 	sv.state = ss_loading;
 	Com_SetServerState (sv.state);
 
+#if KINGPIN
+	// MH: make client files downloadable
+	if (clientfiles.next)
+	{
+		linkednamelist_t *cf = &clientfiles;
+		while (cf->next)
+		{
+			char buf[2*MAX_QPATH];
+			cf = cf->next;
+			Com_sprintf(buf, sizeof(buf), "%s/%s", FS_Gamedir(), cf->name);
+			if (Sys_FileLength(buf) > 0)
+				DownloadIndex(cf->name);
+		}
+	}
+
+	// MH: look for PAK files to make downloadable (but not in "main")
+	if (allow_download_paks->intvalue && Cvar_VariableString("clientdir")[0])
+	{
+		for (i=0; i<10; i++)
+		{
+			char buf[2*MAX_QPATH];
+			Com_sprintf(buf, sizeof(buf), "%s/pak%d.pak", FS_Gamedir(), i);
+			if (Sys_FileLength(buf) > 0)
+			{
+				if (!i)
+				{
+					Com_Printf ("WARNING: This game has a pak0.pak file but it will not be downloadable.\n", LOG_SERVER|LOG_WARNING);
+					continue;
+				}
+				Com_sprintf(buf, sizeof(buf), "pak%d.pak", i);
+				DownloadIndex(buf);
+			}
+		}
+	}
+#endif
+
 	// load and spawn all other entities
 	if (sv.attractloop)
 	{
@@ -347,10 +652,36 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 	}
 	else
 	{
-		ge->SpawnEntities ( sv.name, CM_EntityString(), spawnpoint );
+		char *entities = CM_EntityString();
+#if KINGPIN
+		// MH: workaround for a bug that goes back to the original Kingpin SDK!
+		char *p = entities;
+		while (p = strstr(p, "\"weapon_barmachinegun\""))
+			memcpy(p, "\"weapon_flamethrower\" ", 22);
+#endif
+		ge->SpawnEntities ( sv.name, entities, spawnpoint );
 
 		//r1ch: override what the game dll may or may not have set for this with the true value
 		Com_sprintf (sv.configstrings[CS_MAXCLIENTS], sizeof(sv.configstrings[CS_MAXCLIENTS]), "%d", maxclients->intvalue);
+
+#if KINGPIN
+		// MH: make a custom sky downloadable
+		if (sv.configstrings[CS_SKY][0] && sv.configstrings[CS_SKY][0]!='.')
+		{
+			// standard skies that the player should already have
+			static const char *ignore[] = { "cp", "hl", "pv", "rc", "sr", "st", "ty", NULL };
+			for (i=0; ignore[i]; i++)
+				if (!Q_stricmp(sv.configstrings[CS_SKY], ignore[i])) goto skipsky;
+			for (i=0; i<6; i++)
+			{
+				static const char *env_suf[6] = { "rt", "bk", "lf", "ft", "up", "dn" };
+				char buf[MAX_QPATH];
+				Com_sprintf(buf, sizeof(buf), "env/%s%s.tga", sv.configstrings[CS_SKY], env_suf[i]);
+				DownloadIndex(buf);
+			}
+		}
+skipsky:
+#endif
 
 		// run two frames to allow everything to settle
 		ge->RunFrame ();
@@ -424,7 +755,10 @@ void SV_InitGame (void)
 #endif
 
 	svs.initialized = true;
-	server_start_time = time(NULL);
+
+	// MH: prevent uptime being reset by "map" command
+	if (!server_start_time)
+		server_start_time = time(NULL);
 
 	// get any latched variable changes (maxclients, etc)
 	Cvar_GetLatchedVars ();
@@ -467,12 +801,12 @@ void SV_InitGame (void)
 	svs.spawncount = randomMT()&0x7FFFFFFF;
 
 	svs.clients = Z_TagMalloc (sizeof(client_t)*maxclients->intvalue, TAGMALLOC_CLIENTS);
+	memset (svs.clients, 0, sizeof(client_t)*maxclients->intvalue);
 
 	svs.num_client_entities = maxclients->intvalue*UPDATE_BACKUP*64;
-	svs.client_entities = Z_TagMalloc (sizeof(entity_state_t)*svs.num_client_entities, TAGMALLOC_CL_ENTS);
-
-	memset (svs.clients, 0, sizeof(client_t)*maxclients->intvalue);
-	memset (svs.client_entities, 0, sizeof(entity_state_t)*svs.num_client_entities);
+	// MH: optionally delay client_entities allocation for reduced memory usage (also no need to clear)
+	if (!sv_minimize_memory->intvalue)
+		svs.client_entities = Z_TagMalloc (sizeof(entity_state_t)*svs.num_client_entities, TAGMALLOC_CL_ENTS);
 
 	// r1: spam warning for those stupid servers that run 250 maxclients and 32 player slots
 	if (maxclients->intvalue > 64)
@@ -486,15 +820,17 @@ void SV_InitGame (void)
 	SV_InitGameProgs ();
 
 	// heartbeats will always be sent to the id master
-	svs.last_heartbeat = -295000;		// send immediately (r1: give few secs for configs to run)
+	svs.last_heartbeat = curtime - 295000;		// send immediately (r1: give few secs for configs to run) (MH: using wall clock (not server time))
 
 	if (dedicated->intvalue)
 	{
+#if !KINGPIN
 		if (sv_cheaternet->intvalue)
 			NET_StringToAdr ("query.anticheat.r1ch.net:27930", &cheaternet_adr);
+#endif
 
 		if (sv_global_master->intvalue)
-			NET_StringToAdr ("master.q2servers.com:27900", &master_adr[0]);
+			NET_StringToAdr (GLOBAL_MASTER, &master_adr[0]);
 	}
 
 	//r1: ping masters now that the network is up
@@ -548,6 +884,18 @@ void SV_Map (qboolean attractloop, const char *levelstring, qboolean loadgame)
 
 	Z_Verify("SV_Map:START");
 
+#if KINGPIN
+	// MH: moved here from SV_SpawnServer (needs to be before "changing" broadcast)
+	if (Cvar_GetNumLatchedVars() || sv_recycle->intvalue)
+	{
+		Com_Printf ("Reloading Game DLL.\n", LOG_SERVER);
+		sv.state = ss_dead; // triggers SV_InitGame below
+
+		if (sv_recycle->intvalue != 2)
+			Cvar_ForceSet ("sv_recycle", "0");
+	}
+#endif
+
 	sv.loadgame = loadgame;
 	sv.attractloop = attractloop;
 
@@ -573,6 +921,19 @@ void SV_Map (qboolean attractloop, const char *levelstring, qboolean loadgame)
 		// the game is just starting
 		SV_InitGame ();
 	}
+	// MH: prevent a pointless final game frame and pending messages being sent
+	else
+	{
+		int i;
+		for (i=0 ; i<maxclients->intvalue ; i++)
+		{
+			if (svs.clients[i].state == cs_spawned)
+			{
+				svs.clients[i].state = cs_connected;
+				SV_ClearMessageList(&svs.clients[i]);
+			}
+		}
+	}
 
 	// if there is a + in the map, set nextserver to the remainder
 	ch = strchr(level, '+');
@@ -584,9 +945,11 @@ void SV_Map (qboolean attractloop, const char *levelstring, qboolean loadgame)
 	else
 		Cvar_Set ("nextserver", "");
 
+#if !KINGPIN
 	//ZOID special hack for end game screen in coop mode
 	if (Cvar_IntValue ("coop") && !Q_stricmp(level, "victory.pcx"))
 		Cvar_Set ("nextserver", "gamemap \"*base1\"");
+#endif
 
 	// if there is a $, use the remainder as a spawnpoint
 	ch = strchr(level, '$');

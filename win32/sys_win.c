@@ -50,6 +50,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "../win32/conproc.h"
 
+// MH: enables separate threads for the main loop and console
+#define CONSOLETHREAD	1
+
+void Sys_AcquireConsoleMutex (void);
+void Sys_ReleaseConsoleMutex (void);
+void Sys_UpdateConsoleBuffer (void);
+
 int SV_CountPlayers (void);
 
 //#define DEMO
@@ -79,6 +86,9 @@ extern netadr_t netaddress_pyroadmin;
 #endif
 static HANDLE		hinput, houtput;
 BOOL	oldStyleConsole = FALSE;
+
+static char	console_text[1024];
+static int	console_textlen;
 #endif
 
 uint32	sys_msg_time;
@@ -103,6 +113,11 @@ char		*argv[MAX_NUM_ARGVS];
 sizebuf_t	console_buffer;
 byte		console_buff[16384];
 
+#if CONSOLETHREAD
+qboolean exitmainloop = false;
+static HANDLE console_bufferevent;
+#endif
+
 //r1: service support
 #ifdef DEDICATED_ONLY
 SERVICE_STATUS          MyServiceStatus; 
@@ -112,6 +127,9 @@ SERVICE_STATUS_HANDLE   MyServiceStatusHandle;
 //original game command line
 char	cmdline[4096];
 char	bname[MAX_QPATH];
+
+// MH: custom console window title
+char	*win_title = NULL;
 
 /*
 ===============================================================================
@@ -146,6 +164,20 @@ NORETURN void Sys_Error (const char *error, ...)
 
 	Qcommon_Shutdown ();
 
+#if CONSOLETHREAD
+	// MH: flush console buffer
+	if (console_buffer.cursize)
+	{
+		if (hwnd_Server)
+		{
+			DWORD_PTR r;
+			SendMessageTimeout(hwnd_Server, WM_USER + 5, 0, 0, SMTO_ABORTIFHUNG, 100, &r);
+		}
+		else
+			Sys_UpdateConsoleBuffer();
+	}
+#endif
+
 	va_start (argptr, error);
 	vsnprintf (text, sizeof(text)-1, error, argptr);
 	va_end (argptr);
@@ -157,11 +189,19 @@ NORETURN void Sys_Error (const char *error, ...)
 
 rebox:;
 
+#if KINGPIN
+	ret = MessageBox(NULL, text, "Kingpin Fatal Error", MB_ICONEXCLAMATION | MB_YESNO);
+#else
 	ret = MessageBox(NULL, text, "Quake II Fatal Error", MB_ICONEXCLAMATION | MB_YESNO);
+#endif
 
 	if (ret == IDYES)
 	{
+#if KINGPIN
+		ret = MessageBox(NULL, "Please attach your debugger now to prevent the built in exception handler from catching the breakpoint. When ready, press Yes to cause a breakpoint or No to cancel.", "Kingpin Fatal Error", MB_ICONEXCLAMATION | MB_YESNO | MB_DEFBUTTON2);
+#else
 		ret = MessageBox(NULL, "Please attach your debugger now to prevent the built in exception handler from catching the breakpoint. When ready, press Yes to cause a breakpoint or No to cancel.", "Quake II Fatal Error", MB_ICONEXCLAMATION | MB_YESNO | MB_DEFBUTTON2);
+#endif
 		if (ret == IDYES)
 		{
 #ifndef _DEBUG
@@ -183,6 +223,10 @@ rebox:;
 
 void Sys_Quit (void)
 {
+#if CONSOLETHREAD
+	exitmainloop = true;
+#endif
+
 	timeEndPeriod( 1 );
 
 #ifndef DEDICATED_ONLY
@@ -243,7 +287,12 @@ void EXPORT Sys_ServiceCtrlHandler (DWORD Opcode)
  
             SetServiceStatus (MyServiceStatusHandle, &MyServiceStatus);
 
-			Com_Quit();
+//			Com_Quit();
+			// MH: can't call Com_Quit directly because it checks args
+			Sys_AcquireConsoleMutex();
+			Cmd_ExecuteString ("quit terminated by local request.\n");
+			Sys_ReleaseConsoleMutex();
+
             return; 
     } 
  
@@ -284,7 +333,11 @@ int EXPORT main(void)
 { 
     SERVICE_TABLE_ENTRY   DispatchTable[] = 
     { 
+#if KINGPIN
+        { "kpded2", (LPSERVICE_MAIN_FUNCTION)Sys_ServiceStart      }, 
+#else
         { "R1Q2", (LPSERVICE_MAIN_FUNCTION)Sys_ServiceStart      }, 
+#endif
         { NULL,              NULL          } 
     }; 
 
@@ -315,8 +368,13 @@ void Sys_InstallService(char *servername, char *cmdline)
 	strcat (lpszBinaryPathName, " -service ");
 	strcat (lpszBinaryPathName, cmdline);
 
+#if KINGPIN
+	Com_sprintf (srvDispName, sizeof(srvDispName), "Kingpin - %s", servername);
+	Com_sprintf (srvName, sizeof(srvName), "kpded2(%s)", servername);
+#else
 	Com_sprintf (srvDispName, sizeof(srvDispName), "Quake II - %s", servername);
 	Com_sprintf (srvName, sizeof(srvName), "R1Q2(%s)", servername);
+#endif
 
 	schSCManager = OpenSCManager( 
 		NULL,                    // local machine 
@@ -361,7 +419,11 @@ void Sys_DeleteService (char *servername)
 	SC_HANDLE schService, schSCManager;
 	char srvName[MAX_OSPATH];
 
+#if KINGPIN
+	snprintf (srvName, sizeof(srvName)-1, "kpded2(%s)", servername);
+#else
 	snprintf (srvName, sizeof(srvName)-1, "R1Q2(%s)", servername);
+#endif
 	//strcpy (srvName, servername);
 
 	schSCManager = OpenSCManager( 
@@ -429,31 +491,66 @@ void Sys_Minimize (void)
 	SendMessage (hwnd_Server, WM_ACTIVATE, MAKELONG(WA_INACTIVE,1), 0);
 }
 
+// MH: set custom console window title
+void Sys_Title (char *title)
+{
+	free(win_title);
+	win_title = strdup(title);
+	Sys_SetWindowText(win_title);
+}
+
 #ifndef NO_SERVER
 void Sys_SetWindowText (char *buff)
 {
 #ifdef DEDICATED_ONLY
 	if (!global_Service)
 #endif
-		SetWindowText (hwnd_Server, buff);
+	{
+		// MH: ignore automatic titles if a custom title has been set
+		if (win_title && buff != win_title)
+			return;
+
+		if (hwnd_Server)
+#if CONSOLETHREAD
+			PostMessage(hwnd_Server, WM_USER + 6, 0, (LPARAM)strdup(buff));
+#else
+			SetWindowText (hwnd_Server, buff);
+#endif
+		else
+			SetConsoleTitle(buff); // MH: apply title to old console too
+	}
 }
 
 void ServerWindowProcCommandExecute (void)
 {
 	int			ret;
 	char		buff[1024];
+	int			i;
 
 	*(DWORD *)&buff = sizeof(buff)-2;
 
-	ret = (int)SendDlgItemMessage (hwnd_Server, IDC_COMMAND, EM_GETLINE, 1, (LPARAM)buff);
+	ret = (int)SendDlgItemMessage (hwnd_Server, IDC_COMMAND, WM_GETTEXT, sizeof(buff), (LPARAM)buff);
 	if (!ret)
 		return;
 
+	// MH: EDITTEXT control replaced by COMBOBOX with last 10 commands history
+	i = SendDlgItemMessage (hwnd_Server, IDC_COMMAND, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)buff);
+	if (i != CB_ERR)
+		i = SendDlgItemMessage (hwnd_Server, IDC_COMMAND, CB_DELETESTRING, i, 0);
+	SendDlgItemMessage (hwnd_Server, IDC_COMMAND, CB_INSERTSTRING, 0, (LPARAM)buff);
+	SendDlgItemMessage (hwnd_Server, IDC_COMMAND, CB_DELETESTRING, 10, 0);
+
 	buff[ret] = '\n';
 	buff[ret+1] = '\0';
+
+	Sys_AcquireConsoleMutex();
+
 	Sys_ConsoleOutput (buff);
 	//Cmd_ExecuteString (buff);
 	Cbuf_AddText (buff);
+
+	Sys_ReleaseConsoleMutex();
+
 	SendDlgItemMessage (hwnd_Server, IDC_COMMAND, WM_SETTEXT, 0, (LPARAM)"");
 }
 
@@ -464,7 +561,63 @@ void Sys_UpdateConsoleBuffer (void)
 		return;
 #endif
 
-	if (console_buffer.cursize)
+	if (!console_buffer.cursize) return;
+
+	if (oldStyleConsole)
+	{
+		int			dummy;
+		char		text[256];
+		char		cleanstring[sizeof(console_buff)];
+		const char	*p;
+		char		*s;
+
+		Sys_AcquireConsoleMutex();
+
+		p = console_buffer.data;
+		s = cleanstring;
+
+		while (p[0])
+		{
+			if (p[0] == '\n')
+			{
+				*s++ = '\r';
+			}
+
+			//r1: strip high bits here
+			*s = (p[0]) & 127;
+
+			if (s[0] >= 32 || s[0] == '\n' || s[0] == '\t')
+				s++;
+
+			p++;
+
+			if ((s - cleanstring) >= sizeof(cleanstring)-2)
+			{
+				*s++ = '\n';
+				break;
+			}
+		}
+		s[0] = '\0';
+
+		SZ_Clear (&console_buffer);
+
+		Sys_ReleaseConsoleMutex();
+
+		if (console_textlen)
+		{
+			text[0] = '\r';
+			memset(&text[1], ' ', console_textlen);
+			text[console_textlen+1] = '\r';
+			text[console_textlen+2] = 0;
+			WriteFile(houtput, text, console_textlen+2, &dummy, NULL);
+		}
+
+		WriteFile(houtput, cleanstring, (DWORD)strlen(cleanstring), &dummy, NULL);
+
+		if (console_textlen)
+			WriteFile(houtput, console_text, console_textlen, &dummy, NULL);
+	}
+	else
 	{
 		int len;
 
@@ -489,8 +642,14 @@ void Sys_UpdateConsoleBuffer (void)
 		memcpy (consoleFullBuffer+consoleBufferPointer, console_buffer.data, console_buffer.cursize);
 		consoleBufferPointer += (console_buffer.cursize - 1);*/
 
+		Sys_AcquireConsoleMutex();
+
 		SendDlgItemMessage (hwnd_Server, IDC_CONSOLE, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
 		SendDlgItemMessage (hwnd_Server, IDC_CONSOLE, EM_REPLACESEL, 0, (LPARAM)console_buffer.data);
+
+		SZ_Clear (&console_buffer);
+
+		Sys_ReleaseConsoleMutex();
 
 		while ((len = (int)SendDlgItemMessage (hwnd_Server, IDC_CONSOLE, EM_GETLINECOUNT, 0, 0)) > 1000)
 		{
@@ -503,8 +662,6 @@ void Sys_UpdateConsoleBuffer (void)
 
 		SendDlgItemMessage (hwnd_Server, IDC_CONSOLE, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
 		SendDlgItemMessage (hwnd_Server, IDC_CONSOLE, WM_VSCROLL, SB_BOTTOM, 0);
-
-		SZ_Clear (&console_buffer);
 	}
 }
 
@@ -536,12 +693,11 @@ LRESULT CALLBACK ServerWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 		case WM_COMMAND:
 			return ServerWindowProcCommand(hwnd, message, wParam, lParam);
 		case WM_ENDSESSION:
-			Cbuf_AddText ("quit exiting due to Windows shutdown.\n");
+			Sys_AcquireConsoleMutex();
+			Cmd_ExecuteString ("quit exiting due to Windows shutdown.\n");
+			Sys_ReleaseConsoleMutex();
 			return TRUE;
 		case WM_CLOSE:
-#ifdef DEDICATED_ONLY
-			if (!global_Service)
-#endif
 			{
 				if (SV_CountPlayers()) {
 					int ays = MessageBox (hwnd_Server, "There are still players on the server! Really shut it down?", "WARNING!", MB_YESNO + MB_ICONEXCLAMATION);
@@ -549,7 +705,9 @@ LRESULT CALLBACK ServerWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 						return TRUE;
 				}
 			}
-			Cbuf_AddText ("quit terminated by local request.\n");
+			Sys_AcquireConsoleMutex();
+			Cmd_ExecuteString ("quit terminated by local request.\n");
+			Sys_ReleaseConsoleMutex();
 			break;
 		case WM_ACTIVATE:
 			{
@@ -574,6 +732,17 @@ LRESULT CALLBACK ServerWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 				SetFocus (GetDlgItem (hwnd_Server, IDC_COMMAND));
 			}
 			return FALSE;
+
+#if CONSOLETHREAD
+		case WM_USER + 5:
+			Sys_UpdateConsoleBuffer();
+			return TRUE;
+
+		case WM_USER + 6:
+			SetWindowText(hwnd_Server, (char*)lParam);
+			free((void*)lParam);
+			return TRUE;
+#endif
 	}
 
 	return FALSE;
@@ -582,6 +751,10 @@ LRESULT CALLBACK ServerWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 
 void _priority_changed (cvar_t *cvar, char *ov, char *nv)
 {
+	// MH: auto priority: above normal when not empty
+	if (!strcmp(cvar->string, "auto"))
+		cvar->intvalue = !!SV_CountPlayers();
+
 	//r1: let dedicated servers eat the cpu if needed
 	switch (cvar->intvalue)
 	{
@@ -611,29 +784,49 @@ void _priority_changed (cvar_t *cvar, char *ov, char *nv)
 	}
 }
 
-//CRITICAL_SECTION consoleCrit;
+CRITICAL_SECTION consoleCrit;
 
 void Sys_AcquireConsoleMutex (void)
 {
-	//EnterCriticalSection (&consoleCrit);
+#if CONSOLETHREAD
+	EnterCriticalSection (&consoleCrit);
+#endif
 }
 
 void Sys_ReleaseConsoleMutex (void)
 {
-	//LeaveCriticalSection (&consoleCrit);
+#if CONSOLETHREAD
+	LeaveCriticalSection (&consoleCrit);
+#endif
 }
 
 void Sys_InitConsoleMutex (void)
 {
-	//InitializeCriticalSection (&consoleCrit);
+#if CONSOLETHREAD
+	InitializeCriticalSection (&consoleCrit);
+#endif
 }
 
 void Sys_FreeConsoleMutex (void)
 {
-	//DeleteCriticalSection (&consoleCrit);
+#if CONSOLETHREAD
+	DeleteCriticalSection (&consoleCrit);
+#endif
 }
 
 qboolean os_winxp = false;
+
+// MH: let players know about shutdowns
+BOOL WINAPI ConsoleHandler(DWORD dwCtrlType)
+{
+	Sys_AcquireConsoleMutex();
+	if (dwCtrlType == CTRL_SHUTDOWN_EVENT)
+		Cmd_ExecuteString ("quit exiting due to Windows shutdown.\n");
+	else
+		Cmd_ExecuteString ("quit terminated by local request.\n");
+	Sys_ReleaseConsoleMutex();
+	return TRUE;
+}
 
 /*
 ================
@@ -655,9 +848,17 @@ void Sys_Init (void)
 		Sys_Error ("Couldn't get OS info");
 
 	if (vinfo.dwMajorVersion < 4)
+#if KINGPIN
+		Sys_Error ("Kingpin requires windows version 4 or greater");
+#else
 		Sys_Error ("Quake2 requires windows version 4 or greater");
+#endif
 	if (vinfo.dwPlatformId == VER_PLATFORM_WIN32s)
+#if KINGPIN
+		Sys_Error ("Kingpin doesn't run on Win32s");
+#else
 		Sys_Error ("Quake2 doesn't run on Win32s");
+#endif
 	else if ( vinfo.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS )
 		s_win95 = true;
 
@@ -703,7 +904,15 @@ void Sys_Init (void)
 				Sys_Error ("Couldn't create dedicated server console");
 			hinput = GetStdHandle (STD_INPUT_HANDLE);
 			houtput = GetStdHandle (STD_OUTPUT_HANDLE);
-		
+
+			// MH: install control handler to let players know about shutdowns
+			SetConsoleCtrlHandler(ConsoleHandler, TRUE);
+
+#if CONSOLETHREAD
+			SZ_Init (&console_buffer, console_buff, sizeof(console_buff));
+			console_buffer.allowoverflow = true;
+#endif
+
 			// let QHOST hook in
 			InitConProc (argc, argv);	
 		}
@@ -742,6 +951,16 @@ void Sys_Init (void)
 				if(hIcon)
 					SendMessage(hwnd_Server, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
 
+				// MH: load larger icon too for alt-tab list
+				hIcon = (HICON)LoadImage(   global_hInstance,
+											MAKEINTRESOURCE(IDI_ICON2),
+											IMAGE_ICON,
+											0,
+											0,
+											0);
+				if(hIcon)
+					SendMessage(hwnd_Server, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+
 				SetFocus (GetDlgItem (hwnd_Server, IDC_COMMAND));
 			}
 		}
@@ -751,12 +970,16 @@ void Sys_Init (void)
 		// Initialization
 	}
 
-	Sys_InitConsoleMutex ();
+//	Sys_InitConsoleMutex ();
 
+#if KINGPIN
+	sys_fpu_bits = Cvar_Get ("sys_fpu_bits", "0", CVAR_NOSET); // 24 bit precision is needed to match client prediction
+#else
 #ifndef _DEBUG
 	sys_fpu_bits = Cvar_Get ("sys_fpu_bits", "2", CVAR_NOSET);
 #else
 	sys_fpu_bits = Cvar_Get ("sys_fpu_bits", "2", 0);
+#endif
 #endif
 
 	//Cmd_AddCommand ("win_priority", Sys_SetQ2Priority);
@@ -769,9 +992,6 @@ void Sys_Init (void)
 }
 
 #ifndef NO_SERVER
-static char	console_text[1024];
-static int	console_textlen;
-
 /*
 ================
 Sys_ConsoleInput
@@ -779,6 +999,10 @@ Sys_ConsoleInput
 */
 char *Sys_ConsoleInput (void)
 {
+#if CONSOLETHREAD
+	return NULL;
+#endif
+
 	Sys_UpdateConsoleBuffer ();
 
 	if (!oldStyleConsole)
@@ -927,11 +1151,13 @@ void Sys_ConsoleOutput (const char *string)
 	if (!dedicated->intvalue)
 		return;
 
+#if !CONSOLETHREAD
 	if (oldStyleConsole)
 	{
 		Sys_ConsoleOutputOld (string);
 		return;
 	}
+#endif
 
 #ifdef DEDICATED_ONLY
 	if (global_Service)
@@ -941,8 +1167,6 @@ void Sys_ConsoleOutput (const char *string)
 	//r1: no output for services, non dedicated and not before buffer is initialized.
 	if (!console_buffer.maxsize)
 		return;
-
-	Sys_AcquireConsoleMutex();
 
 #ifdef USE_PYROADMIN
 	if (pyroadminport->intvalue)
@@ -983,7 +1207,6 @@ void Sys_ConsoleOutput (const char *string)
 	//MessageBox (NULL, text, "hi", MB_OK);
 	//if (console_buffer.cursize + strlen(text)+2 > console_buffer.maxsize)
 	SZ_Print (&console_buffer, text);
-	Sys_ReleaseConsoleMutex();
 }
 
 #endif
@@ -1159,7 +1382,7 @@ void *Sys_GetGameAPI (void *parms, int baseq2DLL)
 	newExists = fopen (newname, "rb");
 	if (newExists)
 	{
-		Com_DPrintf ("%s.new found, moving to %s...\n", gamename, gamename);
+		Com_Printf ("%s.new found, moving to %s\n", LOG_SERVER, gamename, gamename); // MH: changed from Com_DPrintf
 		fclose (newExists);
 		remove (name);
 		rename (newname, name);
@@ -1210,10 +1433,13 @@ void *Sys_GetGameAPI (void *parms, int baseq2DLL)
 					newExists = fopen (newname, "rb");
 					if (newExists)
 					{
-						Com_DPrintf ("%s.new found, moving to %s...\n", gamename, gamename);
 						fclose (newExists);
 						remove (name);
-						rename (newname, name);
+						// MH: check and display rename result
+						if (rename (newname, name))
+							Com_Printf ("WARNING: %s.new found, failed to replace %s\n", LOG_SERVER|LOG_WARNING, gamename, gamename);
+						else
+							Com_Printf ("%s.new found, renamed to %s\n", LOG_SERVER|LOG_NOTICE, gamename, gamename);
 					}
 					game_library = LoadLibrary (name);
 					if (game_library)
@@ -1339,7 +1565,11 @@ void FixWorkingDirectory (void)
 	}
 
 	if (strlen(curDir) > (MAX_OSPATH - MAX_QPATH))
+#if KINGPIN
+		Sys_Error ("Current path is too long. Please move your Kingpin installation to a shorter path.");
+#else
 		Sys_Error ("Current path is too long. Please move your Quake II installation to a shorter path.");
+#endif
 
 skipPathCheck:
 
@@ -1752,6 +1982,7 @@ BOOL IsOpenGLValid (VOID)
 	return FALSE;
 }
 
+#if !KINGPIN
 DWORD R1Q2ExceptionHandler (DWORD exceptionCode, LPEXCEPTION_POINTERS exceptionInfo)
 {
 	FILE	*fhReport;
@@ -2235,6 +2466,7 @@ DWORD R1Q2ExceptionHandler (DWORD exceptionCode, LPEXCEPTION_POINTERS exceptionI
 
 	return EXCEPTION_EXECUTE_HANDLER;
 }
+#endif
 
 #ifndef DEDICATED_ONLY
 
@@ -2415,6 +2647,199 @@ HINSTANCE	global_hInstance;
 //#define FLOAT2INTCAST(f)(*((int *)(&f)))
 //#define FLOAT_GT_ZERO(f) (FLOAT2INTCAST(f) > 0)
 
+#if CONSOLETHREAD
+// MH: separate main loop and console threads to avoid any lengthy blocking (eg. while moving/scrolling the window)
+
+static DWORD WINAPI MainLoopThread(void *p)
+{
+	unsigned int	time, oldtime, newtime;
+
+	oldtime = Sys_Milliseconds ();
+	while (!exitmainloop)
+	{
+		Sys_AcquireConsoleMutex();
+
+		newtime = Sys_Milliseconds ();
+		time = newtime - oldtime;
+
+		Sys_SetFPU (sys_fpu_bits->intvalue);
+		Qcommon_Frame (time);
+
+		Sys_ReleaseConsoleMutex();
+
+		// notify console thread if there's text to display
+		if (console_buffer.cursize)
+		{
+			if (hwnd_Server)
+				PostMessage(hwnd_Server, WM_USER + 5, 0, 0);
+			else
+				SetEvent(console_bufferevent);
+		}
+
+		oldtime = newtime;
+	}
+	return 0;
+}
+
+int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
+{
+#ifndef NO_SERVER
+//	unsigned int	handle;
+#endif
+    MSG				msg;
+	DWORD			tid;
+
+    /* previous instances do not exist in Win32 */
+    if (hPrevInstance)
+        return 0;
+
+	if (hInstance)
+		strncpy (cmdline, lpCmdLine, sizeof(cmdline)-1);
+
+	global_hInstance = hInstance;
+
+	Sys_InitConsoleMutex();
+
+	ParseCommandLine (lpCmdLine);
+
+	//r1ch: always change to our directory (ugh)
+	FixWorkingDirectory ();
+
+	//hInstance is empty when we are back here with service code
+#ifdef DEDICATED_ONLY
+	if (hInstance && argc > 1)
+	{
+		if (!strcmp(argv[1], "-service"))
+		{
+			global_Service = true;
+			return main ();
+		}
+	}
+#endif
+
+	Sys_SetFPU (sys_fpu_bits->intvalue);
+	Sys_CheckFPUStatus ();
+
+	Qcommon_Init (argc, argv);
+
+	if (oldStyleConsole)
+		console_bufferevent = CreateEvent(NULL, FALSE, FALSE, NULL);
+
+	// MH: there is no console when running as a service so no need for a separate thread
+#ifdef DEDICATED_ONLY
+	if (global_Service)
+	{
+		MainLoopThread(NULL);
+		return 0;
+	}
+#endif
+
+	if (!CreateThread (NULL, 0, MainLoopThread, NULL, 0, &tid))
+	{
+		printf ("Couldn't create main loop thread\n");
+		return 0;
+	}
+
+	if (oldStyleConsole)
+	{
+		HANDLE h[2] = { hinput, console_bufferevent };
+		for (;;)
+		{
+			DWORD r = WaitForMultipleObjects(2, h, FALSE, INFINITE);
+			if (r == WAIT_OBJECT_0)
+			{
+				INPUT_RECORD	recs[1024];
+				int		dummy;
+				int		ch, numread, numevents;
+
+				for ( ;; )
+				{
+					if (!GetNumberOfConsoleInputEvents (hinput, &numevents))
+						Sys_Error ("Error getting # of console events");
+
+					if (numevents <= 0)
+						break;
+
+					if (!ReadConsoleInput(hinput, recs, 1, &numread))
+						Sys_Error ("Error reading console input");
+
+					if (numread != 1)
+						Sys_Error ("Couldn't read console input");
+
+					if (recs[0].EventType == KEY_EVENT)
+					{
+						if (!recs[0].Event.KeyEvent.bKeyDown)
+						{
+							ch = recs[0].Event.KeyEvent.uChar.AsciiChar;
+
+							switch (ch)
+							{
+								case '\r':
+									WriteFile(houtput, "\r\n", 2, &dummy, NULL);	
+
+									if (console_textlen)
+									{
+										console_text[console_textlen] = '\n';
+										console_text[console_textlen+1] = 0;
+										console_textlen = 0;
+
+										Sys_AcquireConsoleMutex();
+										Cbuf_AddText (console_text);
+										Sys_ReleaseConsoleMutex();
+									}
+									break;
+
+								case '\b':
+									if (console_textlen)
+									{
+										console_textlen--;
+										WriteFile(houtput, "\b \b", 3, &dummy, NULL);	
+									}
+									break;
+
+								default:
+									if (ch >= ' ')
+									{
+										if (console_textlen < sizeof(console_text)-2)
+										{
+											WriteFile(houtput, &ch, 1, &dummy, NULL);	
+											console_text[console_textlen] = ch;
+											console_textlen++;
+										}
+									}
+									break;
+							}
+						}
+					}
+				}
+			}
+			else
+				Sys_UpdateConsoleBuffer();
+		}
+	}
+	else
+	{
+		while (GetMessage (&msg, NULL, 0, 0))
+		{
+			sys_msg_time = msg.time;
+
+#ifndef NO_SERVER
+			if (!hwnd_Server || !IsDialogMessage(hwnd_Server, &msg))
+			{
+#endif
+				TranslateMessage (&msg);
+				DispatchMessage (&msg);
+#ifndef NO_SERVER
+			}
+#endif
+		}
+	}
+
+	return 0;
+}
+
+#else
+
 extern cvar_t	*sys_loopstyle;
 int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
@@ -2566,3 +2991,21 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 
 	return 0;
 }
+#endif
+
+#if KINGPIN
+// MH: worker thread stuff
+intptr_t Sys_StartThread(LPTHREAD_START_ROUTINE func, void *param, int priority)
+{
+	DWORD tid;
+	HANDLE t = CreateThread(NULL, 0, func, param, 0, &tid);
+	SetThreadPriority(t, priority);
+	return (intptr_t)t;
+}
+
+void Sys_WaitThread(intptr_t thread)
+{
+	WaitForSingleObject((HANDLE)thread, INFINITE);
+	CloseHandle((HANDLE)thread);
+}
+#endif

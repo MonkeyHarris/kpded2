@@ -237,6 +237,15 @@ int	NET_Config (int toOpen)
 			ip_sockets[NS_SERVER] = 0;
 		}
 
+#if KINGPIN
+		// MH: close Gamespy request socket
+		if (ip_sockets[NS_SERVER_GS])
+		{
+			closesocket (ip_sockets[NS_SERVER_GS]);
+			ip_sockets[NS_SERVER_GS] = 0;
+		}
+#endif
+
 		old_config = NET_NONE;
 	}
 
@@ -291,9 +300,20 @@ void NET_OpenIP (int flags)
 			ip_sockets[NS_SERVER] = NET_IPSocket (ip->string, port);
 			if (!ip_sockets[NS_SERVER] && dedicated)
 				Com_Error (ERR_FATAL, "Couldn't allocate dedicated server IP port on %s:%d. Another application is probably using it.", ip->string, port);
+
+#if KINGPIN
+			// MH: create Gamespy request socket
+			if (dedicated)
+			{
+				ip_sockets[NS_SERVER_GS] = NET_IPSocket (ip->string, port - 10);
+				if (!ip_sockets[NS_SERVER_GS])
+					Com_Error (ERR_FATAL, "Couldn't allocate dedicated server IP port for Gamespy requests on %s:%d. Another application is probably using it.", ip->string, port);
+			}
+#endif
 		}
 	}
 
+#ifndef DEDICATED_ONLY // MH: leave this out of dedicated server
 	// dedicated servers don't need client ports
 	if (dedicated)
 		return;
@@ -319,6 +339,7 @@ void NET_OpenIP (int flags)
 
 	if (!ip_sockets[NS_CLIENT])
 		Com_Error (ERR_DROP, "Couldn't allocate client IP port.");
+#endif
 }
 
 // sleeps msec or until net socket is ready
@@ -337,9 +358,19 @@ void NET_Sleep(int msec)
 
 	FD_ZERO(&fdset);
 	FD_SET(ip_sockets[NS_SERVER], &fdset); // network socket
+#if KINGPIN
+	// MH: include Gamespy request socket
+	if (ip_sockets[NS_SERVER_GS])
+		FD_SET(ip_sockets[NS_SERVER_GS], &fdset);
+#endif
 	timeout.tv_sec = msec/1000;
 	timeout.tv_usec = (msec%1000)*1000;
-	select ((int)(ip_sockets[NS_SERVER]+1), &fdset, NULL, NULL, &timeout);
+#if KINGPIN
+	if (ip_sockets[NS_SERVER_GS])
+		select ((int)((ip_sockets[NS_SERVER] > ip_sockets[NS_SERVER_GS] ? ip_sockets[NS_SERVER] : ip_sockets[NS_SERVER_GS])+1), &fdset, NULL, NULL, &timeout);
+	else
+#endif
+		select ((int)(ip_sockets[NS_SERVER]+1), &fdset, NULL, NULL, &timeout);
 }
 #endif
 
@@ -410,8 +441,6 @@ void NET_SendLoopPacket (netsrc_t sock, int length, const void *data)
 	loop->msgs[i].datalen = length;
 }
 
-#endif
-
 int NET_Client_Sleep (int msec)
 {
     struct timeval	timeout;
@@ -431,3 +460,4 @@ int NET_Client_Sleep (int msec)
 	timeout.tv_usec = (msec%1000)*1000;
 	return select ((int)(i+1), &fdset, NULL, NULL, &timeout);
 }
+#endif

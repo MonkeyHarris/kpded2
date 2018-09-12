@@ -30,6 +30,207 @@ char	svBeginStuffString[1100];
 
 int		stringCmdCount;
 
+#if KINGPIN
+// MH: download caching/compression stuff
+
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>
+#define stat _stat
+#define fstat _fstat
+#endif
+
+download_t *downloads = NULL;
+
+#ifdef _WIN32
+static unsigned __stdcall CacheDownload(void *arg)
+#else
+static void *CacheDownload(void *arg)
+#endif
+{
+	download_t *d = (download_t*)arg;
+	int c;
+	z_stream zs;
+
+	c = d->size - d->offset;
+
+	if (d->compbuf)
+	{
+		if (sv_compress_downloads->intvalue > Z_BEST_COMPRESSION)
+			Cvar_Set ("sv_compress_downloads", va("%d", Z_BEST_COMPRESSION));
+		memset(&zs, 0, sizeof(zs));
+		deflateInit2(&zs, sv_compress_downloads->intvalue, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY);
+		zs.next_out = d->compbuf;
+		zs.avail_out = c - 1;
+	}
+
+	do
+	{
+		char buf[0x4000];
+		int r = read(d->fd, buf, c < sizeof(buf) ? c : sizeof(buf));
+		if (r <= 0)
+			break;
+		c -= r;
+		if (d->compbuf)
+		{
+			if (!zs.next_in)
+			{
+				zs.next_in = buf;
+				zs.avail_in = 1024;
+				deflate(&zs, Z_PARTIAL_FLUSH);
+				zs.avail_in += r - 1024;
+			}
+			else
+			{
+				zs.next_in = buf;
+				zs.avail_in = r;
+			}
+			if ((r = deflate(&zs, 0)) || !zs.avail_out)
+			{
+				if (r)
+					Com_Printf ("Download compression error (%d)\n", LOG_SERVER|LOG_DOWNLOAD|LOG_WARNING, r);
+				break;
+			}
+		}
+	}
+	while (c > 0);
+	if (d->compbuf)
+	{
+		if (!c && deflate(&zs, Z_FINISH) == Z_STREAM_END)
+		{
+			d->compsize = zs.total_out;
+			d->compbuf = Z_Realloc(d->compbuf, d->compsize);
+			Com_Printf ("Compressed %s from %d to %d (%d%%)\n", LOG_SERVER|LOG_DOWNLOAD|LOG_NOTICE, d->name, d->size - d->offset, d->compsize, 100 * d->compsize / (d->size - d->offset));
+		}
+		else
+		{
+			Z_Free(d->compbuf);
+			d->compbuf = NULL;
+		}
+		deflateEnd(&zs);
+	}
+	close(d->fd);
+	d->fd = -1;
+	return 0;
+}
+
+download_t *NewCachedDownload(client_t *cl, qboolean compress)
+{
+	struct stat	s;
+	download_t *d = downloads;
+	if (compress)
+		fstat(fileno(cl->download), &s);
+	while (d)
+	{
+		if (!strcmp(d->name, cl->downloadFileName))
+		{
+			if (compress)
+			{
+				if (d->compbuf && d->offset == cl->downloadoffset)
+				{
+					if (d->mtime == s.st_mtime)
+					{
+						d->refc++;
+						return d;
+					}
+					if (!d->refc)
+					{
+						d->refc = 1;
+						d->size = cl->downloadsize;
+						d->mtime = s.st_mtime;
+						d->compsize = 0;
+						d->compbuf = Z_Realloc(d->compbuf, d->size - d->offset);
+						d->fd = dup(fileno(cl->download));
+						d->thread = Sys_StartThread(CacheDownload, d, -1);
+						return d;
+					}
+				}
+			}
+			else if (d->offset <= cl->downloadoffset)
+			{
+				if (d->fd == -1)
+					return NULL;
+				d->refc++;
+				return d;
+			}
+		}
+		d = d->next;
+	}
+
+	d = Z_TagMalloc(sizeof(*d), TAGMALLOC_DOWNLOAD_CACHE);
+	memset(d, 0, sizeof(*d));
+	d->refc = 1;
+	d->size = cl->downloadsize;
+	d->offset = cl->downloadoffset;
+	if (compress)
+	{
+		d->mtime = s.st_mtime;
+		d->compbuf = Z_TagMalloc(d->size - d->offset, TAGMALLOC_DOWNLOAD_CACHE);
+		if (!d->compbuf)
+		{
+			Z_Free(d);
+			return NULL;
+		}
+	}
+	d->name = CopyString (cl->downloadFileName, TAGMALLOC_DOWNLOAD_CACHE);
+	d->fd = dup(fileno(cl->download));
+	d->thread = Sys_StartThread(CacheDownload, d, -1);
+	d->next = downloads;
+	downloads = d;
+	return d;
+}
+
+void ReleaseCachedDownload(download_t *download)
+{
+	download_t *d = downloads, *p = NULL;
+	while (d)
+	{
+		if (d == download)
+		{
+			d->refc--;
+			if (!d->refc && d->compbuf && d->offset)
+			{
+				if (p)
+					p->next = d->next;
+				else
+					downloads = d->next;
+				Sys_WaitThread(d->thread);
+				Z_Free(d->compbuf);
+				Z_Free(d->name);
+				Z_Free(d);
+			}
+			return;
+		}
+		p = d;
+		d = d->next;
+	}
+}
+
+void ClearCachedDownloads()
+{
+	download_t *d = downloads, *p = NULL;
+	while (d)
+	{
+		download_t *n = d->next;
+		if (!d->refc)
+		{
+			if (p)
+				p->next = n;
+			else
+				downloads = n;
+			Sys_WaitThread(d->thread);
+			if (d->compbuf)
+				Z_Free(d->compbuf);
+			Z_Free(d->name);
+			Z_Free(d);
+		}
+		else
+			p = d;
+		d = n;
+	}
+}
+#endif
+
 /*
 ============================================================
 
@@ -81,6 +282,10 @@ static void SV_CreateBaseline (client_t *cl)
 		if (!svent->inuse)
 			continue;
 
+#if KINGPIN
+		// MH: include props in baselines
+		if (!svent->s.num_parts)
+#endif
 		if (!svent->s.modelindex && !svent->s.sound && !svent->s.effects)
 			continue;
 
@@ -91,11 +296,24 @@ static void SV_CreateBaseline (client_t *cl)
 		//
 		//VectorCopy (svent->s.origin, svent->s.old_origin);
 		cl->lastlines[entnum] = svent->s;
+
+		// MH: don't bother including player positions/angles as they'll soon change
+		if (svent->client)
+		{
+			memset(&cl->lastlines[entnum].origin, 0, sizeof(cl->lastlines[entnum].origin));
+			memset(&cl->lastlines[entnum].angles, 0, sizeof(cl->lastlines[entnum].angles));
+#if KINGPIN
+			// directional lighting too
+			memset(&cl->lastlines[entnum].model_lighting, 0, sizeof(cl->lastlines[entnum].model_lighting));
+#endif
+		}
+		// MH: don't include frames/events either for the same reason
+		cl->lastlines[entnum].frame = cl->lastlines[entnum].event = 0;
+
 		FastVectorCopy (cl->lastlines[entnum].origin, cl->lastlines[entnum].old_origin);
 	}
 }
 
-static void SV_New_f (void);
 static void SV_AddConfigstrings (void)
 {
 	int		start;
@@ -113,31 +331,52 @@ static void SV_AddConfigstrings (void)
 	wrote = 0;
 
 	// write a packet full of data
-#ifndef NO_ZLIB
+#if !defined(NO_ZLIB) && !KINGPIN
 	if (sv_client->protocol == PROTOCOL_ORIGINAL)
 #endif
 	{
-#ifndef NO_ZLIB
+#if !defined(NO_ZLIB) && !KINGPIN
 plainStrings:
 #endif
 		while (start < MAX_CONFIGSTRINGS)
 		{
+#if KINGPIN
+			int cs = start;
+			// MH: send downloadables, possibly in place of images
+			if (cs >= CS_IMAGES && cs < CS_IMAGES + MAX_IMAGES && (sv.dlconfigstrings[cs - CS_IMAGES][0] || sv.dlconfigstrings[cs - CS_IMAGES - 1][0]))
+				cs += MAX_CONFIGSTRINGS - CS_IMAGES;
+			if (sv.configstrings[cs][0])
+#else
 			if (sv.configstrings[start][0])
+#endif
 			{
+#if KINGPIN
+				len = (int)strlen(sv.configstrings[cs]);
+#else
 				len = (int)strlen(sv.configstrings[start]);
+#endif
 
 				len = len > MAX_QPATH ? MAX_QPATH : len;
 
 				MSG_BeginWriting (svc_configstring);
 				MSG_WriteShort (start);
+#if KINGPIN
+				MSG_Write (sv.configstrings[cs], len);
+#else
 				MSG_Write (sv.configstrings[start], len);
+#endif
 				MSG_Write ("\0", 1);
+				// MH: count full message length
+				wrote += MSG_GetLength();
 				SV_AddMessage (sv_client, true);
 
 				//we add in a stuffcmd every 500 bytes to ensure that old clients will transmit a
 				//netchan ack asap. uuuuuuugly...
-				wrote += len;
+#if KINGPIN
+				if (sv_client->patched < 4 && wrote >= 1300) // MH: patched client doesn't need this
+#else
 				if (wrote >= 500)
+#endif
 				{
 					MSG_BeginWriting (svc_stufftext);
 					MSG_WriteString ("cmd \177n\n");
@@ -148,7 +387,7 @@ plainStrings:
 			start++;
 		}
 	}
-#ifndef NO_ZLIB
+#if !defined(NO_ZLIB) && !KINGPIN
 	else
 	{
 		int			index;
@@ -311,9 +550,11 @@ static void SV_New_f (void)
 		return;
 	}
 
+#if !KINGPIN
 	//warn if client is newer than server
 	if (sv_client->protocol_version > MINOR_VERSION_R1Q2)
 		Com_Printf ("NOTICE: Client %s[%s] uses R1Q2 protocol version %d, server is using %d. Check you have the latest R1Q2 installed.\n", LOG_NOTICE|LOG_SERVER, sv_client->name, NET_AdrToString(&sv_client->netchan.remote_address), sv_client->protocol_version, MINOR_VERSION_R1Q2);
+#endif
 
 	//r1: new client state now to prevent multiple new from causing high cpu / overflows.
 	sv_client->state = cs_spawning;
@@ -454,7 +695,12 @@ static void SV_New_f (void)
 	// serverdata needs to go over for all types of servers
 	// to make sure the protocol is right, and to set the gamedir
 	//
+#if KINGPIN
+	// MH: send client-side "gamedir" value
+	gamedir = Cvar_VariableString ("clientdir");
+#else
 	gamedir = Cvar_VariableString ("gamedir");
+#endif
 
 	// send the serverdata
 	MSG_BeginWriting (svc_serverdata);
@@ -474,6 +720,7 @@ static void SV_New_f (void)
 	// send full levelname
 	MSG_WriteString (sv.configstrings[CS_NAME]);
 
+#if !KINGPIN
 	if (sv_client->protocol == PROTOCOL_R1Q2)
 	{
 		//are we enhanced?
@@ -485,9 +732,11 @@ static void SV_New_f (void)
 		MSG_WriteByte (0);	//was adv.deltas
 		MSG_WriteByte (sv_strafejump_hack->intvalue);
 	}
+#endif
 
 	SV_AddMessage (sv_client, true);
 
+#if !KINGPIN
 	if (sv_fps->intvalue != 10)
 	{
 		if (sv_client->protocol == PROTOCOL_R1Q2)
@@ -500,6 +749,7 @@ static void SV_New_f (void)
 		else
 			SV_ClientPrintf (sv_client, PRINT_CHAT, "NOTE: This is a %d FPS server. You will experience reduced latency and smoother gameplay if you use a compatible client such as R1Q2, AprQ2 or EGL.\n", sv_fps->intvalue);
 	}
+#endif
 
 	//r1: we have to send another \n in case serverdata caused game switch -> autoexec without \n
 	//this will still cause failure if the last line of autoexec exec's another config for example.
@@ -517,6 +767,7 @@ static void SV_New_f (void)
 		}
 	}
 
+#if !KINGPIN
 	if (!sv_client->versionString)
 	{
 		MSG_BeginWriting (svc_stufftext);
@@ -528,13 +779,27 @@ static void SV_New_f (void)
 		);
 		SV_AddMessage (sv_client, true);
 	}
+#endif
+
+#if KINGPIN
+	// MH: fix the default rate setting
+	if (sv_client->rate == 4000)
+	{
+		MSG_BeginWriting (svc_stufftext);
+		MSG_WriteString ("echo \"Your 'rate' setting is being raised from the default 4000 to 25000 for a smoother game\"\nset rate 25000\n");
+		SV_AddMessage (sv_client, true);
+		sv_client->rate = 25000;
+	}
+#endif
 
 	bans = &cvarbans;
 
 	while (bans->next)
 	{
 		bans = bans->next;
+#if !KINGPIN
 		if (!(!sv_client->versionString && !strcmp (bans->varname, "version")))
+#endif
 		{
 			MSG_BeginWriting (svc_stufftext);
 			MSG_WriteString (va("cmd \177c %s $%s\n", bans->varname, bans->varname));
@@ -542,12 +807,36 @@ static void SV_New_f (void)
 		}
 	}
 
-	if (svConnectStuffString[0])
+	// MH: only sending these on new connections (not gamemap changes)
+	if (!sv_client->spawncount)
 	{
-		MSG_BeginWriting (svc_stufftext);
-		MSG_WriteString (svConnectStuffString);
-		SV_AddMessage (sv_client, true);
+		if (svConnectStuffString[0])
+		{
+			MSG_BeginWriting (svc_stufftext);
+			MSG_WriteString (svConnectStuffString);
+			SV_AddMessage (sv_client, true);
+		}
+
+#if KINGPIN
+		// MH: let patched client know compression is supported by server
+		if (sv_client->patched >= 4 && sv_compress->intvalue > 0)
+		{
+			MSG_BeginWriting (svc_stufftext);
+			MSG_WriteString ("\177p cmp\n");
+			SV_AddMessage (sv_client, true);
+		}
+#endif
 	}
+
+#if KINGPIN
+	// MH: check parental lock
+	MSG_BeginWriting (svc_stufftext);
+	MSG_WriteString ("cmd \177c \177nc $nocurse $cl_parental_lock $cl_parental_override\n");
+	SV_AddMessage (sv_client, true);
+#endif
+
+	// MH: retain current spawncount value to detect a map change while downloading
+	sv_client->spawncount = svs.spawncount;
 
 	//
 	// game server
@@ -637,11 +926,21 @@ static void SV_BaselinesMessage (qboolean userCmd)
 
 	// write a packet full of data
 	//r1: use new per-client baselines
-#ifndef NO_ZLIB
+#if !defined(NO_ZLIB) && !KINGPIN
 	if (sv_client->protocol == PROTOCOL_ORIGINAL)
 #endif
 	{
-#ifndef NO_ZLIB
+#if KINGPIN && 0 // not needed with parental lock check
+		if (sv_client->patched < 4)
+		{
+			// MH: stuffing one at the start and then every 1300 bytes (below)
+			MSG_BeginWriting (svc_stufftext);
+			MSG_WriteString ("cmd \177n\n");
+			SV_AddMessage (sv_client, true);
+		}
+#endif
+
+#if !defined(NO_ZLIB) && !KINGPIN
 plainLines:
 #endif
 		start = startPos;
@@ -651,13 +950,21 @@ plainLines:
 			if (base->number)
 			{
 				MSG_BeginWriting (svc_spawnbaseline);
+#if KINGPIN
+				SV_WriteDeltaEntity (&null_entity_state, base, true, true, false, 100);
+#else
 				SV_WriteDeltaEntity (&null_entity_state, base, true, true, sv_client->protocol, sv_client->protocol_version);
+#endif
 				wrote += MSG_GetLength();
 				SV_AddMessage (sv_client, true);
 
 				//we add in a stuffcmd every 500 bytes to ensure that old clients will transmit a
 				//netchan ack asap. uuuuuuugly...
+#if KINGPIN
+				if (sv_client->patched < 4 && wrote >= 1300) // MH: patched client doesn't need this
+#else
 				if (wrote >= 500)
+#endif
 				{
 					MSG_BeginWriting (svc_stufftext);
 					MSG_WriteString ("cmd \177n\n");
@@ -669,7 +976,7 @@ plainLines:
 			start++;
 		}
 	}
-#ifndef NO_ZLIB
+#if !defined(NO_ZLIB) && !KINGPIN
 	else
 	{
 		uint32		realBytes;
@@ -788,7 +1095,7 @@ int SV_CountPlayers (void)
 
 	for (i=0,cl=svs.clients; i < maxclients->intvalue ; i++,cl++)
 	{
-		if (cl->state != cs_spawned)
+		if (cl->state < cs_connected) // MH: include all connected players (not only spawned)
 			continue;
 
 		count++;
@@ -806,6 +1113,7 @@ static void SV_BadCommand_f (void)
 
 void SV_ClientBegin (client_t *cl)
 {
+#if !KINGPIN
 	if (!cl->versionString)
 	{
 		//r1: they didn't respond to version probe
@@ -813,7 +1121,9 @@ void SV_ClientBegin (client_t *cl)
 		SV_DropClient (cl, false);
 		return;
 	}
-	else if (cl->reconnect_var[0])
+	else
+#endif
+	if (cl->reconnect_var[0])
 	{
 		//r1: or the reconnect cvar...
 		Com_Printf ("WARNING: Client %s[%s] didn't respond to reconnect check, hacked/broken client? Client dropped.\n", LOG_SERVER|LOG_WARNING, cl->name, NET_AdrToString (&cl->netchan.remote_address));
@@ -935,7 +1245,7 @@ void SV_ClientBegin (client_t *cl)
 	}
 #endif
 
-	if (cl->beginspawncount != svs.spawncount )
+	if (cl->spawncount != svs.spawncount )
 	{
 		Com_Printf ("SV_ClientBegin from %s for a different level\n", LOG_SERVER|LOG_NOTICE, cl->name);
 		cl->state = cs_connected;
@@ -946,14 +1256,21 @@ void SV_ClientBegin (client_t *cl)
 		return;
 	}
 
+#if !KINGPIN
 	//start everyone out at 10 fps if they didn't specify otherwise
 	if (!cl->settings[CLSET_FPS])
 		cl->settings[CLSET_FPS] = 10;
+#endif
 
 	cl->downloadsize = 0;
 
 	cl->state = cs_spawned;
 
+	// MH: write serverdata to client demo
+	if (cl->demofile)
+		SV_WriteClientDemoServerData(cl);
+
+#if !KINGPIN
 	//r1: check dll versions for struct mismatch
 	if (cl->edict->client == NULL)
 		Com_Error (ERR_HARD, "Tried to run API V4 game on a V3 server!!");
@@ -963,6 +1280,55 @@ void SV_ClientBegin (client_t *cl)
 		SV_ClientPrintf (cl, PRINT_CHAT, "console: p_auth q2acedetect\r                                         \rWelcome to %s! [%d/%d players, %d minutes into game]\n", hostname->string, SV_CountPlayers(), maxclients->intvalue, (int)((float)sv.time / 1000 / 60));
 		//SV_ClientPrintf (sv_client, PRINT_CHAT, "p_auth                                                                                                                                                                                                                                                                                                                                \r                 \r");
 	}
+#endif
+
+#if KINGPIN
+	// MH: send any images that were replaced with downloadables earlier
+	if (sv.dlconfigstrings[0][0])
+	{
+		int i;
+		for (i=1; i<MAX_IMAGES; i++)
+		{
+			if (!sv.dlconfigstrings[i - 1][0]) break;
+			if (sv.configstrings[CS_IMAGES + i][0])
+			{
+				MSG_BeginWriting (svc_configstring);
+				MSG_WriteShort (CS_IMAGES + i);
+				MSG_WriteString (sv.configstrings[CS_IMAGES + i]);
+				SV_AddMessage (cl, true);
+			}
+		}
+	}
+
+	if (!cl->patched)
+	{
+		if (cl->cl_maxfps && cl->cl_maxfps != -1)
+		{
+			// MH: reset cl_maxfps and gl_swapinterval back to original values
+			MSG_BeginWriting (svc_stufftext);
+			if (cl->cl_maxfps < 0)
+				MSG_WriteString (va("set cl_maxfps %d\nset gl_swapinterval 1\nset kpded2_fps \"\"\n", -cl->cl_maxfps));
+			else
+				MSG_WriteString (va("set cl_maxfps %d\nset kpded2_fps \"\"\n", cl->cl_maxfps));
+			SV_AddMessage (cl, true);
+			// MH: reset rate too
+			if (cl->rate < 33334 && Cvar_VariableString ("clientdir")[0])
+			{
+				MSG_BeginWriting (svc_stufftext);
+				MSG_WriteString (va("set rate %d\n", cl->rate));
+				SV_AddMessage (cl, true);
+			}
+			cl->cl_maxfps = 0;
+		}
+		else if (!cl->fps)
+		{
+			// MH: check if cl_maxfps and gl_swapinterval needs resetting
+			MSG_BeginWriting (svc_stufftext);
+			MSG_WriteString ("cmd \177c \177d2 $kpded2_fps\n");
+			SV_AddMessage (cl, true);
+		}
+	}
+#endif
 
 	if (svBeginStuffString[0])
 	{
@@ -996,6 +1362,7 @@ void SV_ClientBegin (client_t *cl)
 	}
 #endif
 
+#if !KINGPIN
 	if (cl->cheaternet_message)
 	{
 		if (cl->state > cs_zombie)
@@ -1003,13 +1370,12 @@ void SV_ClientBegin (client_t *cl)
 		Z_Free (cl->cheaternet_message);
 		cl->cheaternet_message = NULL;
 	}
+#endif
 
 	//give them some movement
 
 	//r1: give appropriate amount of movement, except on a givemsec frame.
-	//FIXME this is broken for some framenums?
-	//if (sv.framenum & 15)
-	cl->commandMsec = (int)((sv_msecs->value / 16.0f) * (16 - (sv.framenum % 16)));
+	cl->commandMsec = sv_msecs->intvalue - (sv.framenum & 15) * 100; // MH: fixed
 
 	cl->commandMsecOverflowCount = 0;
 	cl->totalMsecUsed = 0;
@@ -1018,6 +1384,29 @@ void SV_ClientBegin (client_t *cl)
 	//r1: this is in bad place
 	//Cbuf_InsertFromDefer ();
 }
+
+#if KINGPIN
+// MH: load downloaded PAK file(s)
+static void ClientLoadNewPAK()
+{
+	Com_DPrintf ("Reconnecting %s to load new PAK file\n", sv_client->name);
+
+	// reset rate
+	if (!sv_client->patched && sv_client->rate < 33334)
+	{
+		MSG_BeginWriting (svc_stufftext);
+		MSG_WriteString (va("set rate %d\n", sv_client->rate));
+		SV_AddMessage (sv_client, true);
+	}
+
+	// the client needs to change "game" to load new PAK file(s)
+	MSG_BeginWriting (svc_stufftext);
+	MSG_WriteString ("echo \"Reconnecting to load the new PAK file...\"\ndisconnect\ngame main\nreconnect\n");
+	SV_AddMessage (sv_client, true);
+	sv_client->edict->client->ping = -2; // indicate to the game that the player is reconnecting to load the PAK
+	SV_DropClient (sv_client, true);
+}
+#endif
 
 /*
 ==================
@@ -1036,6 +1425,15 @@ static void SV_Begin_f (void)
 		return;
 	}
 
+#if KINGPIN
+	// MH: load downloaded PAK file(s)
+	if (sv_client->downloadpak)
+	{
+		ClientLoadNewPAK();
+		return;
+	}
+#endif
+
 	// handle the case of a level changing while a client was connecting
 	if ( atoi(Cmd_Argv(1)) != svs.spawncount )
 	{
@@ -1045,7 +1443,7 @@ static void SV_Begin_f (void)
 		return;
 	}
 
-	sv_client->beginspawncount = atoi(Cmd_Argv(1));
+	sv_client->spawncount = atoi(Cmd_Argv(1));
 
 	SV_ClientBegin (sv_client);
 }
@@ -1062,12 +1460,14 @@ static void SV_Begin_f (void)
 SV_NextDownload_f
 ==================
 */
+#if !KINGPIN
 static void SV_NextDownload_f (void)
 {
 	uint32		r;
 	int			percent;
 	int			size;
 	int			remaining;
+	byte		buff[MAX_USABLEMSG]; // MH: read buffer
 
 //	sizebuf_t	*queue;
 
@@ -1080,7 +1480,6 @@ static void SV_NextDownload_f (void)
 	if (sv_client->downloadCompressed)
 	{
 		byte		zOut[0xFFFF];
-		byte		*buff;
 		z_stream	z = {0};
 		int			i, j;
 		uint32		realBytes;
@@ -1124,7 +1523,8 @@ static void SV_NextDownload_f (void)
 			if (realBytes + i > 0xFFFF)
 				break;
 
-			buff = sv_client->download + sv_client->downloadcount + j;
+			// MH: read from file
+			FS_Read(buff, i, sv_client->download);
 
 			z.avail_in = i;
 			z.next_in = buff;
@@ -1169,7 +1569,10 @@ static void SV_NextDownload_f (void)
 		}
 
 		if (z.total_out >= realBytes || z.total_out >= (sv_client->netchan.message.buffsize - 6) || realBytes < sv_client->netchan.message.buffsize - 100)
+		{
+			fseek(sv_client->download, sv_client->downloadstart + sv_client->downloadcount, SEEK_SET); // MH: seek back to download position
 			goto olddownload;
+		}
 
 		//r1: use message queue so other reliable messages put in the stream perhaps by game won't cause overflow
 		//queue = MSGQueueAlloc (sv_client, 6 + z.total_out, svc_zdownload);
@@ -1208,6 +1611,13 @@ olddownload:
 		else
 			r = remaining;
 
+		// MH: just in case
+		if (r > sizeof(buff))
+			r = sizeof(buff);
+
+		// MH: read from file
+		FS_Read(buff, r, sv_client->download);
+
 		MSG_BeginWriting (svc_download);
 		MSG_WriteShort (r);
 
@@ -1220,20 +1630,221 @@ olddownload:
 		percent = sv_client->downloadcount*100/size;
 		MSG_WriteByte (percent);
 
-		MSG_Write (sv_client->download + sv_client->downloadcount - r, r);
+		MSG_Write (buff, r); // MH: changed to use read buffer
 		SV_AddMessage (sv_client, true);
 	}
 
 	if (sv_client->downloadcount != sv_client->downloadsize)
 		return;
 
-	FS_FreeFile (sv_client->download);
-	sv_client->download = NULL;
-	sv_client->downloadsize = 0;
-
-	Z_Free (sv_client->downloadFileName);
-	sv_client->downloadFileName = NULL;
+	// MH: free download stuff
+	SV_CloseDownload(sv_client);
 }
+#endif
+
+#if KINGPIN
+// MH: send a download message to a client
+void PushDownload (client_t *cl, qboolean start)
+{
+	int		r;
+
+	if (start && cl->downloadcache)
+	{
+		if (cl->downloadcache->compbuf)
+		{
+			// starting a compressed download
+			cl->downloadsize = cl->downloadcache->compsize;
+			cl->downloadpos = cl->downloadcount = 0;
+		}
+		else
+		{
+			// starting a cached download
+			ReleaseCachedDownload(cl->downloadcache);
+			cl->downloadcache = NULL;
+			fseek(cl->download, cl->downloadstart + cl->downloadoffset, SEEK_SET);
+		}
+	}
+
+	r = cl->downloadsize - cl->downloadpos;
+	if (r < 0)
+		return;
+
+	if (cl->patched >= 4)
+	{
+		// svc_xdownload message for patched client
+		if (r > 1366)
+			r = 1366;
+
+		MSG_BeginWriting (svc_xdownload);
+		MSG_WriteShort (r);
+		MSG_WriteLong (cl->downloadid);
+		if (start)
+		{
+			MSG_WriteLong (-cl->downloadoffset >> 10);
+			MSG_WriteLong (cl->downloadsize);
+			MSG_WriteLong (cl->downloadcache ? cl->downloadcache->size : 0);
+		}
+		else if (cl->downloadcache)
+			MSG_WriteLong (cl->downloadpos / 1366);
+		else
+			MSG_WriteLong ((cl->downloadpos - cl->downloadoffset) / 1366);
+		if (cl->downloadcache)
+			MSG_Write (cl->downloadcache->compbuf + cl->downloadpos, r);
+		else 
+			FS_Read(SZ_GetSpace(MSG_GetRawMsg(), r), r, cl->download);
+	}
+	else
+	{
+		// svc_pushdownload message
+		if (r > 1024)
+			r = 1024;
+
+		MSG_BeginWriting (svc_pushdownload);
+		MSG_WriteShort (r);
+		MSG_WriteLong (cl->downloadsize);
+		MSG_WriteLong (cl->downloadid);
+		MSG_WriteLong (cl->downloadpos >> 10);
+		FS_Read(SZ_GetSpace(MSG_GetRawMsg(), r), r, cl->download);
+	}
+
+	cl->downloadpos += r;
+	if (cl->downloadcount < cl->downloadpos)
+		cl->downloadcount = cl->downloadpos;
+
+	// first and last blocks are sent in reliable messages
+	if (!start && cl->downloadcount != cl->downloadsize)
+	{
+		int msglen = MSG_GetLength();
+		int packetdup = cl->netchan.packetdup;
+		// send reliable separately first if needed to avoid overflow
+		int send_reliable =
+			(
+				(	cl->netchan.incoming_acknowledged > cl->netchan.last_reliable_sequence &&
+					cl->netchan.incoming_reliable_acknowledged != cl->netchan.reliable_sequence &&
+					cl->netchan.reliable_length + msglen > MAX_MSGLEN - 8
+				)
+				||
+				(
+					!cl->netchan.reliable_length && cl->netchan.message.cursize + msglen > MAX_MSGLEN - 8
+				)
+			);
+		if (send_reliable)
+			Netchan_Transmit (&cl->netchan, 0, NULL);
+		cl->netchan.packetdup = 0; // disable duplicate packets (client will re-request lost blocks)
+		Netchan_Transmit (&cl->netchan, msglen, MSG_GetData());
+		cl->netchan.packetdup = packetdup;
+		MSG_FreeData();
+	}
+	else
+		SV_AddMessage (cl, true);
+
+	if (cl->downloadcount != cl->downloadsize)
+		return;
+
+	// free download stuff
+	SV_CloseDownload(cl);
+}
+
+// MH: handle a download chunk request
+void SV_NextPushDownload_f (void)
+{
+	int offset;
+	int n;
+
+	if (!sv_client->download || (sv_client->downloadcache && sv_client->downloadsize != sv_client->downloadcache->compsize))
+		return;
+
+	for (n=1;; n++)
+	{
+		if (!Cmd_Argv(n)[0])
+			break;
+
+		// check that the client has tokens available if bandwidth is limited
+		if (sv_bandwidth->intvalue > 0)
+		{
+			if (sv_client->downloadtokens < 1)
+				return;
+			sv_client->downloadtokens -= (sv_client->patched >= 4 ? 1.333f : 1);
+		}
+
+		if (sv_client->patched >= 4)
+		{
+			offset = atoi(Cmd_Argv(n)) * 1366;
+			if (!sv_client->downloadcache)
+				offset += sv_client->downloadoffset;
+		}
+		else
+			offset = atoi(Cmd_Argv(n)) << 10;
+		if (offset < 0 || offset >= sv_client->downloadsize)
+			return;
+
+		if (sv_client->downloadpos != offset)
+		{
+			// seek to requested position
+			sv_client->downloadpos = offset;
+			if (!sv_client->downloadcache)
+				fseek(sv_client->download, sv_client->downloadstart + sv_client->downloadpos, SEEK_SET);
+		}
+
+		PushDownload(sv_client, false);
+
+		// patched clients can request multiple chunks at a time
+		if (sv_client->patched < 4 || !sv_client->download)
+			break;
+	}
+}
+
+// MH: calculate per-client download speed limit
+int GetDownloadRate()
+{
+	int dlrate;
+	if (sv_bandwidth->intvalue)
+	{
+		int j, c = 0, cp = 0;
+		int bw = sv_bandwidth->intvalue;
+		for (j=0 ; j<maxclients->intvalue ; j++)
+		{
+			if (svs.clients[j].state <= cs_zombie)
+				continue;
+			if (svs.clients[j].download)
+			{
+				c++;
+				if (svs.clients[j].patched)
+					cp++;
+			}
+			else
+				bw -= (svs.clients[j].rate > 14000 ? 14000 : svs.clients[j].rate) / 1000;
+		}
+		dlrate = bw / (c ? c : 1);
+		if (dlrate > 200 && cp)
+		{
+			dlrate = (bw - (c - cp) * 200) / cp;
+			if (dlrate > 1000) // no higher than 1MB/s
+				dlrate = 1000;
+		}
+		else if (dlrate < 30) // no lower than 30KB/s
+			dlrate = 30;
+	}
+	else
+		dlrate = 1000; // default to 1MB/s
+	return dlrate;
+}
+
+// MH: check if a file is in the downloadables list
+static qboolean IsDownloadable(const char *file)
+{
+	int i;
+
+	for (i=0; i<MAX_IMAGES; i++)
+	{
+		if (!sv.dlconfigstrings[i][0])
+			break;
+		if (!Q_stricmp(file, sv.dlconfigstrings[i]))
+			return true;
+	}
+	return false;
+}
+#endif
 
 #define	DL_UDP	0x00000001
 #define	DL_TCP	0x00000002
@@ -1249,15 +1860,82 @@ static void SV_BeginDownload_f(void)
 	int			offset = 0;
 	size_t		length;
 	qboolean	valid;
+#if KINGPIN
+	int			fileargc;
+	char		tempname[128];
+	qboolean	ispak = false;
+#endif
+
+	// MH: don't waste time on files from a previous map
+	if (sv_client->spawncount != svs.spawncount)
+	{
+		Com_Printf ("SV_BeginDownload_f from %s for a different level\n", LOG_SERVER|LOG_DOWNLOAD|LOG_NOTICE, sv_client->name);
+		sv_client->state = cs_connected;
+		SV_New_f ();
+		return;
+	}
 
 	name = Cmd_Argv(1);
 
+#if KINGPIN
+	// MH: should never happen, but just in case (exploit?)
+	if (sv_client->state != cs_spawning)
+	{
+		Com_Printf ("Refusing unexpected download from %s\n", LOG_SERVER|LOG_DOWNLOAD|LOG_NOTICE, sv_client->name);
+		MSG_BeginWriting (svc_download);
+		MSG_WriteShort (-1);
+		MSG_WriteByte (0);
+		SV_AddMessage (sv_client, true);
+		return;
+	}
+
+	// MH: old/slow download method shouldn't be used
+	if (!strcmp(Cmd_Argv(0), "download"))
+	{
+		Com_Printf ("Refusing old download method from %s\n", LOG_SERVER|LOG_DOWNLOAD|LOG_NOTICE, sv_client->name);
+		MSG_BeginWriting (svc_download);
+		MSG_WriteShort (-1);
+		MSG_WriteByte (0);
+		SV_AddMessage (sv_client, true);
+		return;
+	}
+
+	// MH: the Kingpin client doesn't enclose the filename in quotes, so spaces cause trouble
+	for (fileargc=Cmd_Argc()-1; fileargc>1; fileargc--)
+	{
+		for (p=Cmd_Argv(fileargc); *p; p++)
+			if (*p < '0' || *p > '9') break;
+		if (*p) break;
+	}
+	if (fileargc > 1)
+	{
+		// MH: the filename apparently spans multiple args, so join them
+		int i;
+		if (strlen(name) >= sizeof(tempname))
+			goto invalid;
+		name = strcpy(tempname, name);
+		for (i=2; i<=fileargc; i++)
+		{
+			p = Cmd_Argv(i);
+			if (strlen(tempname) + 1 + strlen(p) >= sizeof(tempname))
+				goto invalid;
+			strcat(tempname, " ");
+			strcat(tempname, p);
+		}
+	}
+
+	sv_client->downloadid = atoi(Cmd_Argv(fileargc + 1));
+	if (Cmd_Argc() > fileargc + 2)
+		offset = atoi(Cmd_Argv(fileargc + 2)) << 10; // downloaded offset
+#else
 	if (Cmd_Argc() > 2)
 		offset = atoi(Cmd_Argv(2)); // downloaded offset
+#endif
 
 	//name is always filtered for security reasons
 	StripHighBits (name, 1);
 
+#if !KINGPIN
 	//ugly hack to allow server to see clients who are using http dl.
 	if (!strcmp (name, "http"))
 	{
@@ -1267,6 +1945,7 @@ static void SV_BeginDownload_f(void)
 			sv_client->downloadsize = 1;
 		return;
 	}
+#endif
 
 	// hacked by zoid to allow more conrol over download
 	// first off, no .. or global allow check
@@ -1292,8 +1971,18 @@ static void SV_BeginDownload_f(void)
 
 	if (sv_download_refuselimit->intvalue && SV_CountPlayers() >= sv_download_refuselimit->intvalue)
 	{
+#if KINGPIN
+		SV_ClientPrintf (sv_client, PRINT_HIGH, "Download refused: too many players connected\n");
+#else
 		SV_ClientPrintf (sv_client, PRINT_HIGH, "Too many players connected, refusing download: ");
+#endif
 		MSG_BeginWriting (svc_download);
+#if KINGPIN
+		// MH: tell patched client to not show standard download fail message
+		if (sv_client->patched)
+			MSG_WriteShort (-2);
+		else
+#endif
 		MSG_WriteShort (-1);
 		MSG_WriteByte (0);
 		SV_AddMessage (sv_client, true);
@@ -1311,7 +2000,7 @@ static void SV_BeginDownload_f(void)
 	}
 
 	//block the really nasty ones - \server.cfg will download from mod root on win32, .. is obvious
-	if (name[0] == '\\' || strstr (name, ".."))
+	if (/*name[0] == '\\' ||*/ strstr (name, "..")) // MH: disabled '\' blackholing (still refused below)
 	{
 		Com_Printf ("Refusing illegal download path %s to %s\n", LOG_SERVER|LOG_DOWNLOAD|LOG_EXPLOIT, name, sv_client->name);
 		MSG_BeginWriting (svc_download);
@@ -1343,8 +2032,10 @@ static void SV_BeginDownload_f(void)
 		|| !isvalidchar (name[0])
 		// r1: \ is bad in general, client won't even write properly if we do sent it
 		|| strchr (name, '\\')
+#if !KINGPIN
 		// MUST be in a subdirectory	
 		|| !strchr (name, '/')
+#endif
 		//fix for / at eof causing dir open -> crash (note, we don't blackhole this one because original q2 client
 		//with allow_download_players 1 will scan entire CS_PLAYERSKINS. since some mods overload it, this may result
 		//in example "download players/\nsomething/\n".
@@ -1361,6 +2052,7 @@ static void SV_BeginDownload_f(void)
 		SV_AddMessage (sv_client, true);
 		return;
 	}
+#if !KINGPIN
 	//r1: non-enhanced clients don't auto download a sprite's skins. this results in crash when trying to render it.
 	else if (sv_client->protocol == PROTOCOL_ORIGINAL && sv_disallow_download_sprites_hack->intvalue == 1 && length >= 4 && !Q_stricmp (name + length - 4, ".sp2"))
 	{
@@ -1373,6 +2065,10 @@ static void SV_BeginDownload_f(void)
 		SV_AddMessage (sv_client, true);
 		return;		
 	}
+#endif
+
+	// MH: filename must be lowercase for path checks
+	Q_strlwr (name);
 
 	valid = true;
 
@@ -1385,7 +2081,11 @@ static void SV_BeginDownload_f(void)
 		if (!(allow_download_players->intvalue & DL_UDP))
 			valid = false;
 	}
+#if KINGPIN
+	else if (strncmp(name, "models/", 7) == 0)
+#else
 	else if (strncmp(name, "models/", 7) == 0 || strncmp(name, "sprites/", 8) == 0)
+#endif
 	{
 		if (!(allow_download_models->intvalue & DL_UDP))
 			valid = false;
@@ -1407,16 +2107,42 @@ static void SV_BeginDownload_f(void)
 	}
 	else if ((strncmp(name, "env/", 4) == 0 || strncmp(name, "textures/", 9) == 0))
 	{
+#if KINGPIN
+		if (!(allow_download_maps->intvalue & DL_UDP))
+#else
 		if (!(allow_download_textures->intvalue & DL_UDP))
+#endif
 			valid = false;
 	}
+#if KINGPIN
+	// MH: check downloadable files list
+	else if (!IsDownloadable(name))
+	{
+		valid = false;
+	}
+	else if (length == 8 && !strcmp(name + length - 4, ".pak"))
+	{
+		ispak = true;
+	}
+#else
 	else if (!allow_download_others->intvalue)
 	{
 		valid = false;
 	}
+#endif
+
+#if KINGPIN
+	// MH: if just downloaded a PAK file then tell client to load it
+	if (!ispak && sv_client->downloadpak)
+	{
+		ClientLoadNewPAK();
+		return;
+	}
+#endif
 
 	if (!valid)
 	{
+invalid:
 		Com_DPrintf ("Refusing to download %s to %s\n", name, sv_client->name);
 		if (strncmp(name, "maps/", 5) == 0 && !(allow_download_maps->intvalue & DL_UDP))
 		{
@@ -1445,42 +2171,61 @@ static void SV_BeginDownload_f(void)
 	//r1: should this ever happen?
 	if (sv_client->download)
 	{
-		Com_Printf ("WARNING: Client %s started a download '%s' with an already existing download of '%s'.\n", LOG_SERVER|LOG_WARNING, sv_client->name, name, sv_client->downloadFileName);
+		Com_Printf ("WARNING: Client %s started a download '%s' with an already existing download of '%s'.\n", LOG_SERVER|LOG_DOWNLOAD|LOG_WARNING, sv_client->name, name, sv_client->downloadFileName);
 
-		FS_FreeFile (sv_client->download);
-		sv_client->download = NULL;
-
-		Z_Free (sv_client->downloadFileName);
-		sv_client->downloadFileName = NULL;
+		// MH: free download stuff
+		SV_CloseDownload(sv_client);
 	}
 
 	sv_client->downloadsize = FS_LoadFile (name, NULL);
-
-	//adjust case and re-try
-#ifdef LINUX
-	if (sv_client->downloadsize == -1)
-	{
-		Q_strlwr (name);
-		sv_client->downloadsize = FS_LoadFile (name, NULL);
-	}
-#endif
 
 	if (sv_client->downloadsize == -1)
 	{
 		Com_Printf ("Couldn't download %s to %s\n", LOG_SERVER|LOG_DOWNLOAD|LOG_NOTICE, name, sv_client->name);
 
+#if KINGPIN
+		MSG_BeginWriting (svc_pushdownload);
+#else
 		MSG_BeginWriting (svc_download);
+#endif
 		MSG_WriteShort (-1);
 		MSG_WriteByte (0);
 		SV_AddMessage (sv_client, true);
 		return;
 	}
 
+#if KINGPIN
+	// MH: client may request files (models) before the PAK containing them is downloaded - refuse them
+	if (lastpakfile && IsDownloadable(strrchr(lastpakfile, '/') + 1))
+	{
+		Com_DPrintf ("Refusing to download %s to %s\n", name, sv_client->name);
+		SV_ClientPrintf (sv_client, PRINT_HIGH, "Download refused: file is in %s\n", strrchr(lastpakfile, '/') + 1);
+		MSG_BeginWriting (svc_download);
+		if (sv_client->patched)
+			MSG_WriteShort (-2);
+		else
+			MSG_WriteShort (-1);
+		MSG_WriteByte (0);
+		SV_AddMessage (sv_client, true);
+		return;
+	}
+#endif
+
 	if (sv_max_download_size->intvalue && sv_client->downloadsize > sv_max_download_size->intvalue)
 	{
+#if KINGPIN
+		SV_ClientPrintf (sv_client, PRINT_HIGH, "Download refused: file is %d bytes larger than allowed\n", sv_client->downloadsize - sv_max_download_size->intvalue);
+#else
 		SV_ClientPrintf (sv_client, PRINT_HIGH, "Refusing download, file is %d bytes larger than allowed: ", sv_client->downloadsize - sv_max_download_size->intvalue);
+#endif
 
 		MSG_BeginWriting (svc_download);
+#if KINGPIN
+		// MH: tell patched client to not show standard download fail message
+		if (sv_client->patched)
+			MSG_WriteShort (-2);
+		else
+#endif
 		MSG_WriteShort (-1);
 		MSG_WriteByte (0);
 		SV_AddMessage (sv_client, true);
@@ -1500,11 +2245,28 @@ static void SV_BeginDownload_f(void)
 		ext = strrchr (name, '.');
 		if (ext)
 		{
+#if KINGPIN
+			strncpy (ext+1, "tm2", length - ((ext+1) - name));
+#else
 			strncpy (ext+1, "tmp", length - ((ext+1) - name));
+#endif
 		}
+#if KINGPIN
+		{
+			const char *clientdir = Cvar_VariableString ("clientdir");
+			SV_ClientPrintf (sv_client, PRINT_HIGH, "Download refused: file size differs. Please delete %s\n", va("%s/%s", !clientdir[0] || !strncmp(name, "players/", 8) ? BASEDIRNAME : clientdir, name));
+		}
+#else
 		SV_ClientPrintf (sv_client, PRINT_HIGH, "Refusing download, file size differs. Please delete %s: ", name);
+#endif
 
 		MSG_BeginWriting (svc_download);
+#if KINGPIN
+		// MH: tell patched client to not show standard download fail message (v4 will also delete the existing file)
+		if (sv_client->patched)
+			MSG_WriteShort (-3);
+		else
+#endif
 		MSG_WriteShort (-1);
 		MSG_WriteByte (0);
 		SV_AddMessage (sv_client, true);
@@ -1527,8 +2289,17 @@ static void SV_BeginDownload_f(void)
 	}
 
 	//download should be ok by here
-	FS_LoadFile (name, (void **)&sv_client->download);
+	{ // MH: streaming the file from disk/cache instead of preloading it all to memory
+		qboolean closeHandle;
+		FS_FOpenFile (name, &sv_client->download, HANDLE_DUPE, &closeHandle);
+		sv_client->downloadstart = ftell(sv_client->download);
+		if (offset)
+			fseek(sv_client->download, sv_client->downloadstart + offset, SEEK_SET);
+	}
 
+#if KINGPIN
+	sv_client->downloadoffset = sv_client->downloadpos =
+#endif
 	sv_client->downloadcount = offset;
 
 	if (strncmp(name, "maps/", 5) == 0)
@@ -1549,6 +2320,7 @@ static void SV_BeginDownload_f(void)
 			SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", sv_mapdownload_ok_message->string);
 	}
 
+#if !KINGPIN
 	//r1: r1q2 zlib udp downloads?
 #ifndef NO_ZLIB
 	if (!Q_stricmp (Cmd_Argv(3), "udp-zlib"))
@@ -1556,11 +2328,81 @@ static void SV_BeginDownload_f(void)
 	else
 #endif
 		sv_client->downloadCompressed = false;
+#endif
 
 	sv_client->downloadFileName = CopyString (name, TAGMALLOC_CLIENT_DOWNLOAD);
 
+#if KINGPIN
+	Com_Printf (offset ? "Downloading %s to %s (offset %d)\n" : "Downloading %s to %s\n", LOG_SERVER|LOG_DOWNLOAD, name, sv_client->name, offset);
+#else
 	Com_Printf ("UDP downloading %s to %s%s\n", LOG_SERVER|LOG_DOWNLOAD, name, sv_client->name, sv_client->downloadCompressed ? " with zlib" : "");
+#endif
+
+#if KINGPIN
+	sv_client->downloadpak = ispak;
+
+	{
+		// MH: set initial download tokens (allows 0.5s burst)
+		int dlrate = GetDownloadRate();
+		sv_client->downloadtokens = dlrate / 2.f;
+		// MH: update patched client's download speed limit
+		if (sv_client->patched && sv_client->downloadrate != dlrate)
+		{
+			sv_client->downloadrate = dlrate;
+			MSG_BeginWriting (svc_stufftext);
+			MSG_WriteString (va("\177p dlr %d\n", dlrate));
+			SV_AddMessage (sv_client, true);
+		}
+	}
+
+	// MH: set non-patched client's download speed limit
+	if (!sv_client->patched)
+	{
+		if (!sv_client->cl_maxfps)
+		{
+			MSG_BeginWriting (svc_stufftext);
+			if (sv_client->fps <= 60)
+				MSG_WriteString ("cmd \177c \177d1 $kpded2_fps $cl_maxfps / $gl_swapinterval\n");
+			else
+				MSG_WriteString ("cmd \177c \177d1 $kpded2_fps $cl_maxfps\n");
+			SV_AddMessage (sv_client, true);
+		}
+	}
+
+	// MH: if compression is available and the file is over 100KB and not a WAV, compress it for download
+	if (sv_compress_downloads->intvalue > 0 && sv_client->patched >= 4 && sv_client->downloadsize - offset >= 100000 && !strstr(name, ".wav"))
+		sv_client->downloadcache = NewCachedDownload(sv_client, true);
+	// MH: if enabled, cache the file in memory for download (map should already be cached)
+	if (!sv_client->downloadcache && sv_download_precache->intvalue && strncmp(name, "maps/", 5))
+		sv_client->downloadcache = NewCachedDownload(sv_client, false);
+	// MH: if not compressing/caching, begin sending the file immediately
+	if (!sv_client->downloadcache || sv_client->downloadcache->fd == -1)
+		PushDownload(sv_client, true);
+#else
 	SV_NextDownload_f ();
+#endif
+}
+
+// MH: free download stuff
+void SV_CloseDownload(client_t *cl)
+{
+	if (!cl->download)
+		return;
+
+	fclose (cl->download);
+	cl->download = NULL;
+	cl->downloadsize = 0;
+
+	Z_Free (cl->downloadFileName);
+	cl->downloadFileName = NULL;
+
+#if KINGPIN
+	if (cl->downloadcache)
+	{
+		ReleaseCachedDownload(cl->downloadcache);
+		cl->downloadcache = NULL;
+	}
+#endif
 }
 
 #ifdef ANTICHEAT
@@ -1732,6 +2574,11 @@ static void SV_ShowServerinfo_f (void)
 
 	s = Cvar_Serverinfo();
 
+#if KINGPIN
+	// MH: set "game" to client-side value
+	Info_SetValueForKey(s, "game", Cvar_VariableString("clientdir"));
+#endif
+
 	//skip beginning \\ char
 	s++;
 
@@ -1755,6 +2602,7 @@ static void SV_ShowServerinfo_f (void)
 	SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", s);
 }
 
+#if !KINGPIN
 static void SV_ClientServerinfo_f (void)
 {
 	const char	*strafejump_msg;
@@ -1788,6 +2636,7 @@ static void SV_ClientServerinfo_f (void)
 		optimize_msg,
 		packetents_msg);
 }
+#endif
 
 static void SV_NoGameData_f (void)
 {
@@ -1800,9 +2649,9 @@ static void CvarBanDrop (const char *match, const banmatch_t *ban, const char *r
 		SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", ban->message);
 
 	if (ban->blockmethod == CVARBAN_BLACKHOLE)
-		Blackhole (&sv_client->netchan.remote_address, false, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "cvarban: %s == %s", match, result);
+		Blackhole (&sv_client->netchan.remote_address, false, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "cvar: %s = %s", match, result);
 
-	Com_Printf ("Dropped client %s, cvarban: %s == %s\n", LOG_SERVER|LOG_DROP, sv_client->name, match, result);
+	Com_Printf ("Dropped client %s, banned cvar: %s = %s\n", LOG_SERVER|LOG_DROP, sv_client->name, match, result);
 
 	SV_DropClient (sv_client, (ban->blockmethod == CVARBAN_BLACKHOLE) ? false : true);
 }
@@ -1843,8 +2692,9 @@ const banmatch_t *VarBanMatch (varban_t *bans, const char *var, const char *resu
 				}
 				else
 				{
-					if (!result[0])
-						continue;
+					// MH: empty string = 0
+/*					if (!result[0])
+						continue;*/
 				}
 
 				if (matchvalue[1])
@@ -1903,6 +2753,7 @@ static void SV_CvarResult_f (void)
 
 	result = Cmd_Args2(2);
 
+#if !KINGPIN
 	if (!strcmp (Cmd_Argv(1), "version"))
 	{
 		if (!sv_client->versionString && dedicated->intvalue)
@@ -1911,12 +2762,115 @@ static void SV_CvarResult_f (void)
 			Z_Free (sv_client->versionString);
 		sv_client->versionString = CopyString (result, TAGMALLOC_CVARBANS);
 	}
-	else if (!strcmp (Cmd_Argv(1), sv_client->reconnect_var))
+	else
+#endif
+	if (!strcmp (Cmd_Argv(1), sv_client->reconnect_var))
 	{
 		sv_client->reconnect_var[0] = sv_client->reconnect_value[0] = 0;
 		sv_client->reconnect_done = true;
 		return;
 	}
+	// MH: check that cl_maxfps is within sv_minpps - sv_fpsflood range
+	else if (!strcmp (Cmd_Argv(1), "\177fps"))
+	{
+		sv_client->cl_maxfps = atoi(result);
+		if (!sv_client->cl_maxfps)
+		{
+			sv_client->cl_maxfps = -1;
+			return;
+		}
+		if (sv_fpsflood->intvalue && sv_client->cl_maxfps > sv_fpsflood->intvalue)
+		{
+			MSG_BeginWriting (svc_stufftext);
+			MSG_WriteString (va ("set cl_maxfps %d\n", sv_fpsflood->intvalue));
+			SV_AddMessage (sv_client, true);
+			SV_ClientPrintf (sv_client, PRINT_HIGH, "Server restricting cl_maxfps to %d\n", sv_fpsflood->intvalue);
+		}
+		// MH: actual FPS is usually lower than cl_maxfps, so using a slightly higher value
+		else if (sv_minpps->intvalue && sv_client->cl_maxfps < (int)(sv_minpps->value * 1.1))
+		{
+			MSG_BeginWriting (svc_stufftext);
+			MSG_WriteString (va ("set cl_maxfps %d\n", (int)(sv_minpps->value * 1.1)));
+			SV_AddMessage (sv_client, true);
+		}
+		stringCmdCount--;
+		return;
+	}
+#if KINGPIN
+	// MH: check parental control and "nocurse" cvars
+	else if (!strcmp (Cmd_Argv(1), "\177nc"))
+	{
+		int nocurse, cl_parental_lock, cl_parental_override;
+		int p = 2;
+		if (Cmd_Argc() == 5)
+			nocurse = atoi(Cmd_Argv(p++));
+		else
+			nocurse = 0;
+		cl_parental_lock = atoi(Cmd_Argv(p));
+		cl_parental_override = atoi(Cmd_Argv(p+1));
+		sv_client->nocurse = nocurse | (cl_parental_lock && !cl_parental_override);
+		stringCmdCount--;
+		return;
+	}
+	// MH: get cl_maxfps and gl_swapinterval values and adjust for download speed limit
+	else if (!strcmp (Cmd_Argv(1), "\177d1"))
+	{
+		if (sv_client->state == cs_spawning)
+		{
+			char *d;
+			int rate;
+			sv_client->cl_maxfps = atoi(result);
+			if (!sv_client->cl_maxfps)
+			{
+				sv_client->cl_maxfps = -1;
+				return;
+			}
+			if (sv_client->cl_maxfps > 0)
+			{
+				d = strchr(result,'/');
+				if (d && atoi(d + 1))
+					sv_client->cl_maxfps = -sv_client->cl_maxfps;
+			}
+			rate = GetDownloadRate();
+			if (rate > 200) // no higher than 200KB/s
+				rate = 200;
+			sv_client->downloadrate = rate;
+			MSG_BeginWriting (svc_stufftext);
+			if (sv_client->cl_maxfps < 0)
+				MSG_WriteString (va ("set kpded2_fps %d\nset cl_maxfps %d\nset gl_swapinterval 0\n", sv_client->cl_maxfps, rate));
+			else if (d)
+				MSG_WriteString (va ("set kpded2_fps %d\nset cl_maxfps %d\nset gl_swapinterval 1\nset gl_swapinterval 0\n", sv_client->cl_maxfps, rate)); // vsync off fix for Nvidia drivers
+			else
+				MSG_WriteString (va ("set kpded2_fps %d\nset cl_maxfps %d\n", sv_client->cl_maxfps, rate));
+			SV_AddMessage (sv_client, true);
+			// "rate" affects downloading too so raise that as well (but not for "main" as it may change user's config if they quit mid-download)
+			if (sv_client->rate < 33334 && Cvar_VariableString ("clientdir")[0])
+			{
+				MSG_BeginWriting (svc_stufftext);
+				MSG_WriteString ("set rate 33334\n");
+				SV_AddMessage (sv_client, true);
+			}
+		}
+		stringCmdCount--;
+		return;
+	}
+	// MH: reset cl_maxfps and gl_swapinterval if needed
+	else if (!strcmp (Cmd_Argv(1), "\177d2"))
+	{
+		int cl_maxfps = atoi(result);
+		if (cl_maxfps)
+		{
+			MSG_BeginWriting (svc_stufftext);
+			if (cl_maxfps < 0)
+				MSG_WriteString (va("set cl_maxfps %d\nset gl_swapinterval 1\nset kpded2_fps \"\"\n", -cl_maxfps));
+			else
+				MSG_WriteString (va("set cl_maxfps %d\nset kpded2_fps \"\"\n", cl_maxfps));
+			SV_AddMessage (sv_client, true);
+		}
+		stringCmdCount--;
+		return;
+	}
+#endif
 
 	//cvar responses don't count as malicious
 	stringCmdCount--;
@@ -1928,7 +2882,7 @@ static void SV_CvarResult_f (void)
 		switch (match->blockmethod)
 		{
 			case CVARBAN_LOGONLY:
-				Com_Printf ("LOG: %s[%s] matched cvarban: %s == %s\n", LOG_SERVER, sv_client->name, NET_AdrToString (&sv_client->netchan.remote_address), Cmd_Argv(1), result);
+				Com_Printf ("LOG: %s[%s] cvar check: %s = %s\n", LOG_SERVER, sv_client->name, NET_AdrToString (&sv_client->netchan.remote_address), Cmd_Argv(1), result);
 				break;
 			case CVARBAN_MESSAGE:
 				SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", match->message);
@@ -1965,14 +2919,14 @@ static void SV_CvarResult_f (void)
 
 		if (sv_badcvarcheck->intvalue == 0)
 		{
-			Com_Printf ("LOG: %s[%s] sent unrequested cvarban response: %s == %s\n", LOG_SERVER, sv_client->name, NET_AdrToString (&sv_client->netchan.remote_address), Cmd_Argv(1), result);
+			Com_Printf ("LOG: %s[%s] sent unrequested cvar check response: %s = %s\n", LOG_SERVER, sv_client->name, NET_AdrToString (&sv_client->netchan.remote_address), Cmd_Argv(1), result);
 		}
 		else
 		{
 			//note that certain versions of frkq2 can trigger this since the frkq2_cvar hiding code is bugged
 			Com_Printf ("Dropping %s for bad cvar check result ('%s' unrequested).\n", LOG_SERVER|LOG_DROP, sv_client->name, Cmd_Argv(1));
 			if (sv_badcvarcheck->intvalue == 2)
-				Blackhole (&sv_client->netchan.remote_address, false, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "unrequested cvarcheck result '%s'", Cmd_Argv(1));
+				Blackhole (&sv_client->netchan.remote_address, false, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "unrequested cvar check result '%s'", Cmd_Argv(1));
 			SV_DropClient (sv_client, false);
 		}
 	}
@@ -2022,9 +2976,8 @@ static void SV_Lag_f (void)
 {
 	ptrdiff_t	clientID;
 	client_t	*cl;
-	const char	*substring, *s2c;
-	char		buff[32];
-	int			avg_ping;
+	const char	*substring;
+	int			avg_ping, min_ping, max_ping, count, j;
 	float		ccq;
 
 	if (Cmd_Argc() == 1)
@@ -2076,47 +3029,44 @@ static void SV_Lag_f (void)
 		return;
 	}
 
-	if (cl->avg_ping_count)
-		avg_ping = cl->avg_ping_time / cl->avg_ping_count;
-	else
-		avg_ping = cl->ping;
-
-	if (sv_lag_stats->intvalue)
+	// MH: get min/max/avg ping
+	max_ping = min_ping = avg_ping = 0;
+	count = 0;
+	for (j=0 ; j<LATENCY_COUNTS ; j++)
 	{
-		int	dropped;
-
-		//evil hack for a pending response :/
-		dropped = cl->pl_dropped_packets;
-		if (dropped == 1)
-			dropped = 0;
-
-		Com_sprintf (buff, sizeof(buff), "%.2f%%", (float)dropped / (float)cl->pl_sent_packets * 100);
-		s2c = buff;
+		if (cl->frame_latency[j] > 0)
+		{
+			count++;
+			avg_ping += cl->frame_latency[j];
+			if (!min_ping || min_ping > cl->frame_latency[j])
+				min_ping = cl->frame_latency[j];
+			if (max_ping < cl->frame_latency[j])
+				max_ping = cl->frame_latency[j];
+		}
 	}
-	else
-		s2c = "(disabled on this server)";
+	if (count)
+		avg_ping /= count;
 
+#if KINGPIN
+	ccq = 100 - cl->quality;
+#else
 	ccq = (50.0f * (2.0f - (cl->commandMsecOverflowCount > 2 ? 2 : cl->commandMsecOverflowCount)));
+#endif
 
+	// MH: include server timing quality (can cause lag if bad)
 	SV_ClientPrintf (sv_client, PRINT_HIGH, 
-		"Lag stats for %s:\n"
-		"RTT (min/avg/max)  : %d ms / %d ms / %d ms\n"
-		"Connection quality : %.2f%%\n"
-		"Server to Client PL: %s\n"
-		"Client to Server PL: %.2f%%\n",
+		"Recent lag stats for %s:\n"
+		"RTT (min/avg/max)   : %d ms / %d ms / %d ms\n"
+		"Latency stability   : %.0f%%\n"
+		"Server to Client PL : %.2f%%\n"
+		"Client to Server PL : %.2f%%\n"
+		"Server timing       : %d%%\n",
 		cl->name,
-		cl->min_ping, avg_ping, cl->max_ping,
+		min_ping, avg_ping, max_ping,
 		ccq,
-		s2c,
-		((float)cl->netchan.total_dropped / (float)cl->netchan.total_received) * 100);
-}
-
-static void SV_PLResult_f (void)
-{
-	if (!sv_lag_stats->intvalue)
-		return;
-
-	sv_client->pl_dropped_packets--;
+		((float)cl->netchan.out_dropped / (float)cl->netchan.out_total) * 100,
+		((float)cl->netchan.in_dropped / (float)cl->netchan.in_total) * 100,
+		100 - (int)svs.timing);
 }
 
 static void SV_PacketDup_f (void)
@@ -2125,7 +3075,7 @@ static void SV_PacketDup_f (void)
 
 	if (Cmd_Argc() == 1)
 	{
-		SV_ClientPrintf (sv_client, PRINT_HIGH, "Server is sending you %d duplicate packets.\n", sv_client->netchan.packetdup);
+		SV_ClientPrintf (sv_client, PRINT_HIGH, "Server is sending you %d duplicate packets when there is packet loss.\n", sv_client->netchan.packetdup);
 		return;
 	}
 
@@ -2173,6 +3123,33 @@ static void SV_ACToken_f (void)
 }
 #endif
 
+#if KINGPIN
+static void SV_Patched_f (void)
+{
+	const char *cmd = Cmd_Argv(1);
+	if (!strcmp(cmd, "cmp"))
+	{
+		// MH: client is enabling/disabling compression
+		const char *v = Cmd_Argv(2);
+		if (v[0])
+		{
+			sv_client->compress = atoi(v);
+			return;
+		}
+	}
+	Com_Printf ("SV_Patched_f unexpected from %s, assuming not patched\n", LOG_SERVER|LOG_NOTICE, sv_client->name);
+	sv_client->patched = 0;
+}
+
+// MH: open options menu even if scoreboard is showing when Esc key is pressed 
+static void SV_PutAway_f (void)
+{
+	MSG_BeginWriting (svc_stufftext);
+	MSG_WriteString ("menu_main\n");
+	SV_AddMessage (sv_client, true);
+}
+#endif
+
 typedef struct
 {
 	char	/*@null@*/ *name;
@@ -2194,13 +3171,17 @@ static ucmd_t ucmds[] =
 	// issued by hand at client consoles	
 	{"info", SV_ShowServerinfo_f},
 
+#if !KINGPIN
 	{"sinfo", SV_ClientServerinfo_f},
+#endif
 	{"\177c", SV_CvarResult_f},
 	{"\177n", Q_NullFunc},
+#if KINGPIN
+	{"\177p", SV_Patched_f},
+#endif
 
 	{"nogamedata", SV_NoGameData_f},
 	{"lag", SV_Lag_f},
-	{"\177p", SV_PLResult_f},
 	{"packetdup", SV_PacketDup_f},
 	
 
@@ -2211,8 +3192,16 @@ static ucmd_t ucmds[] =
 #endif
 
 	{"download", SV_BeginDownload_f},
+#if KINGPIN
+	{"download5", SV_BeginDownload_f},
+	{"nextdl2", SV_NextPushDownload_f},
+#else
 	{"nextdl", SV_NextDownload_f},
-	//{"debuginfo", SV_Shit_f},
+#endif
+
+#if KINGPIN
+	{"putaway", SV_PutAway_f},
+#endif
 
 	{NULL, NULL}
 };
@@ -2335,7 +3324,7 @@ static void SV_ExecuteUserCommand (char *s)
 		if (!strcmp (Cmd_Argv(0), x->name) || !strcmp (flattened, x->name))
 		{
 			if (x->logmethod == CMDBAN_LOG_MESSAGE)
-				Com_Printf ("SV_ExecuteUserCommand: %s tried to use '%s'\n", LOG_SERVER, sv_client->name, s);
+				Com_Printf ("LOG: %s[%s] tried to use '%s' command\n", LOG_SERVER, sv_client->name, NET_AdrToString (&sv_client->netchan.remote_address), s);
 
 			if (x->kickmethod == CMDBAN_MESSAGE)
 			{
@@ -2343,12 +3332,12 @@ static void SV_ExecuteUserCommand (char *s)
 			}
 			else if (x->kickmethod == CMDBAN_KICK)
 			{
-				Com_Printf ("Dropping %s, bancommand %s matched.\n", LOG_SERVER|LOG_DROP, sv_client->name, x->name);
+				Com_Printf ("Dropping %s, banned command '%s'.\n", LOG_SERVER|LOG_DROP, sv_client->name, x->name);
 				SV_DropClient (sv_client, true);
 			}
 			else if (x->kickmethod == CMDBAN_BLACKHOLE)
 			{
-				Blackhole (&sv_client->netchan.remote_address, false, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "bancommand '%s'", x->name);
+				Blackhole (&sv_client->netchan.remote_address, false, sv_blackhole_mask->intvalue, BLACKHOLE_SILENT, "command: %s", x->name);
 				SV_DropClient (sv_client, false);
 			}
 
@@ -2374,9 +3363,15 @@ static void SV_ExecuteUserCommand (char *s)
 	if (sv_client->state < cs_spawned && !sv_allow_unconnected_cmds->intvalue)
 		return;
 
+#if KINGPIN
+	if (!strcmp(Cmd_Argv(0), "-activate"))
+		return;
+#endif
+
 	//r1: say parser (ick)
 	if (!strcmp (Cmd_Argv(0), "say"))
 	{
+#if !KINGPIN
 		//r1: nocheat kicker/spam filter
 		if (!Q_strncasecmp (Cmd_Args(), "\"NoCheat V2.", 12))
 		{
@@ -2453,6 +3448,7 @@ static void SV_ExecuteUserCommand (char *s)
 			SV_KickClient (sv_client, "client is using q2ace", "q2ace is not permitted on this server, please use regular Quake II.\n");
 			return;
 		}
+#endif
 
 		//r1: note, we can reset on say as it's a "known good" command. resetting on every command is bad
 		//since stuff like q2admin spams tons of stuffcmds all the time...
@@ -2481,6 +3477,12 @@ static void SV_ClientThink (client_t *cl, usercmd_t *cmd)
 {
 	qboolean	interpolate;
 
+#if KINGPIN
+	// MH: check if the patch skipped a packet and remove it from PL counter
+	if (cl->patched && (cmd->buttons & 64) && cl->netchan.in_dropped)
+		cl->netchan.in_dropped--;
+#endif
+
 	cl->commandMsec -= cmd->msec;
 
 	cl->totalMsecUsed += cmd->msec;
@@ -2490,6 +3492,7 @@ static void SV_ClientThink (client_t *cl, usercmd_t *cmd)
 
 	interpolate = false;
 
+#if !KINGPIN
 	//r1: interpolate the move over the msec to smooth out
 	//laggy players. if ClientThink messes with origin in non-obvious
 	//way (eg teleport (which it shouldn't(?))) then this may break
@@ -2512,6 +3515,7 @@ static void SV_ClientThink (client_t *cl, usercmd_t *cmd)
 		else
 			cl->current_move.elapsed = cl->current_move.msec = cmd->msec;
 	}
+#endif
 
 	ge->ClientThink (cl->edict, cmd);
 
@@ -2536,6 +3540,7 @@ static void SV_ClientThink (client_t *cl, usercmd_t *cmd)
 	}
 }
 
+#if !KINGPIN
 static void SV_SetClientSetting (client_t *cl)
 {
 	uint32	setting;
@@ -2643,7 +3648,7 @@ void SV_RunMultiMoves (client_t *cl)
 		{
 			//FIXME: should we adjust for FPS latency?
 			cl->frame_latency[cl->lastframe&(LATENCY_COUNTS-1)] = 
-				svs.realtime - cl->frames[cl->lastframe & UPDATE_MASK].senttime;
+				curtime - cl->frames[cl->lastframe & UPDATE_MASK].senttime; // MH: using wall clock (not server time)
 		}
 	}
 
@@ -2692,6 +3697,59 @@ void SV_RunMultiMoves (client_t *cl)
 	cl->lastcmd = move;
 }
 //#endif
+#endif
+
+// MH: per-client version of SV_CalcPings (which is no longer used)
+static void SV_CalcPing (client_t *cl)
+{
+	int			j;
+	int			total, count;
+#if !KINGPIN
+	int			best;
+#endif
+
+#if !KINGPIN
+	if (sv_calcpings_method->intvalue == 1)
+#endif
+	{
+		total = 0;
+		count = 0;
+		for (j=0 ; j<LATENCY_COUNTS ; j++)
+		{
+			if (cl->frame_latency[j] > 0)
+			{
+				count++;
+				total += cl->frame_latency[j];
+			}
+		}
+		if (!count)
+			cl->ping = 0;
+		else
+			cl->ping = total / count;
+	}
+#if !KINGPIN
+	else if (sv_calcpings_method->intvalue == 2)
+	{
+		best = 9999;
+		for (j=0 ; j<LATENCY_COUNTS ; j++)
+		{
+			if (cl->frame_latency[j] > 0 && cl->frame_latency[j] < best)
+			{
+				best = cl->frame_latency[j];
+			}
+		}
+
+		cl->ping = best != 9999 ? best : 0;
+	}
+	else
+	{
+		cl->ping = 0;
+	}
+#endif
+
+	// let the game dll know about the ping
+	cl->edict->client->ping = cl->ping;
+}
 
 #define	MAX_STRINGCMDS			8
 #define	MAX_USERINFO_UPDATES	8
@@ -2711,7 +3769,13 @@ void SV_ExecuteClientMessage (client_t *cl)
 	int			userinfoCount;
 	qboolean	move_issued, interpolating;
 	int			lastframe;
+#if !KINGPIN
 	vec3_t		oldorigin;
+#endif
+#if KINGPIN
+	int			checksum, calculatedChecksum;
+	int			checksumIndex;
+#endif
 
 	sv_client = cl;
 	sv_player = sv_client->edict;
@@ -2744,6 +3808,11 @@ void SV_ExecuteClientMessage (client_t *cl)
 			}
 
 			move_issued = true;
+
+#if KINGPIN
+			checksumIndex = net_message.readcount;
+			checksum = MSG_ReadByte (&net_message);
+#else
 			//checksumIndex = net_message.readcount;
 
 			//r1ch: suck up the extra checksum byte that is no longer used
@@ -2757,6 +3826,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 				SV_KickClient (cl, "client state corrupted", "SV_ExecuteClientMessage: client state corrupted\n");
 				return;
 			}
+#endif
 
 			lastframe = MSG_ReadLong (&net_message);
 
@@ -2775,20 +3845,6 @@ void SV_ExecuteClientMessage (client_t *cl)
 			else
 			{
 				cl->nodeltaframes = 0;
-			}
-
-			if (lastframe != cl->lastframe)
-			{
-				cl->lastframe = lastframe;
-				if (cl->lastframe > 0)
-				{
-					//FIXME: should we adjust for FPS latency?
-					cl->frame_latency[cl->lastframe&(LATENCY_COUNTS-1)] = 
-						svs.realtime - cl->frames[cl->lastframe & UPDATE_MASK].senttime;
-
-					//if (cl->fps)
-					//	cl->frame_latency[cl->lastframe&(LATENCY_COUNTS-1)] -= 1000 / (cl->fps * 2);
-				}
 			}
 
 			//memset (&nullcmd, 0, sizeof(nullcmd));
@@ -2846,7 +3902,25 @@ void SV_ExecuteClientMessage (client_t *cl)
 			//flag to see if this is actually a player or what (used in givemsec)
 			cl->moved = true;
 
+			// MH: enable using acks to measure packet loss
+			cl->netchan.countacks = true;
+
 			// if the checksum fails, ignore the rest of the packet
+#if KINGPIN
+			calculatedChecksum = COM_BlockSequenceCheckByte (
+				net_message_buffer + checksumIndex + 1,
+				net_message.readcount - checksumIndex - 1,
+				cl->netchan.incoming_sequence,
+				cl->challenge);
+
+			if (calculatedChecksum != checksum)
+			{
+				Com_DPrintf ("Failed command checksum for %s (%d != %d)/%d\n", 
+					cl->name, calculatedChecksum, checksum, 
+					cl->netchan.incoming_sequence);
+				return;
+			}
+#else
 			//r1ch: removed, this has been hacked to death anyway so is waste of cycles
 			/*calculatedChecksum = COM_BlockSequenceCRCByte (
 				net_message_buffer + checksumIndex + 1,
@@ -2860,6 +3934,26 @@ void SV_ExecuteClientMessage (client_t *cl)
 					cl->netchan.incoming_sequence);
 				return;
 			}*/
+#endif
+
+			// MH: latency checking moved from before to after checks above
+			if (lastframe != cl->lastframe)
+			{
+				cl->lastframe = lastframe;
+
+				if (cl->lastframe > 0)
+				{
+					//FIXME: should we adjust for FPS latency?
+					cl->frame_latency[cl->lastframe&(LATENCY_COUNTS-1)] = 
+						curtime - cl->frames[cl->lastframe & UPDATE_MASK].senttime; // MH: using wall clock (not server time)
+
+					//if (cl->fps)
+					//	cl->frame_latency[cl->lastframe&(LATENCY_COUNTS-1)] -= 1000 / (cl->fps * 2);
+
+					// MH: update client's ping
+					SV_CalcPing(cl);
+				}
+			}
 
 			if (!sv_paused->intvalue)
 			{
@@ -2871,10 +3965,13 @@ void SV_ExecuteClientMessage (client_t *cl)
 
 				if (net_drop)
 				{
+#if KINGPIN
+					// MH: adjust ping for old commands (in case of anti-lag processing)
+					cl->edict->client->ping += newcmd.msec;
+					if (cl->netchan.dropped > 1)
+						cl->edict->client->ping += oldcmd.msec;
+#endif
 
-//if (net_drop > 2)
-
-//	Com_Printf ("drop %i\n", net_drop);
 					//if predicting, limit the amount of time they can catch up for
 					if (sv_predict_on_lag->intvalue)
 					{
@@ -2887,19 +3984,36 @@ void SV_ExecuteClientMessage (client_t *cl)
 						if (newcmd.msec > 75)
 							newcmd.msec = 75;
 					}
-						
-					while (net_drop > 2)
-					{
-						SV_ClientThink (cl, &cl->lastcmd);
 
-						net_drop--;
+					// MH: use average of lastcmd + oldest for old command duration, and limit repeat to length of gap
+					if (net_drop > 2 && cl->initialRealTime)
+					{
+						int msec = (net_drop - 2) * (cl->lastcmd.msec + oldest.msec) / 2;
+						if (msec > curtime - cl->initialRealTime - cl->totalMsecUsed - newcmd.msec - oldcmd.msec - oldest.msec)
+							msec = curtime - cl->initialRealTime - cl->totalMsecUsed - newcmd.msec - oldcmd.msec - oldest.msec;
+						while (msec > 0)
+						{
+							cl->lastcmd.msec = (msec < 100 ? msec : 100);
+							msec -= cl->lastcmd.msec;
+							SV_ClientThink (cl, &cl->lastcmd);
+						}
 					}
+
 					if (net_drop > 1)
+					{
 						SV_ClientThink (cl, &oldest);
+#if KINGPIN
+						cl->edict->client->ping -= oldcmd.msec;
+#endif
+					}
 
 					if (net_drop > 0)
+					{
 						SV_ClientThink (cl, &oldcmd);
-
+#if KINGPIN
+						cl->edict->client->ping -= newcmd.msec;
+#endif
+					}
 				}
 				SV_ClientThink (cl, &newcmd);
 			}
@@ -2929,17 +4043,20 @@ void SV_ExecuteClientMessage (client_t *cl)
 
 			interpolating = false;
 
+#if !KINGPIN
 			if (sv_interpolated_pmove->intvalue && cl->current_move.elapsed < cl->current_move.msec)
 			{
 				FastVectorCopy (cl->edict->s.origin, oldorigin);
 				FastVectorCopy (cl->current_move.origin_end, cl->edict->s.origin);
 				interpolating = true;
 			}
+#endif
 
 			// malicious users may try using too many string commands
 			if (++stringCmdCount < MAX_STRINGCMDS)
 				SV_ExecuteUserCommand (s);
 
+#if !KINGPIN
 			//a stringcmd messed with the origin, cancel the interpolation and let
 			//it continue as normal for this move
 			if (interpolating)
@@ -2953,6 +4070,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 					cl->current_move.elapsed = cl->current_move.msec;
 				}
 			}
+#endif
 
 
 			if (cl->state == cs_zombie)
@@ -2984,6 +4102,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 		case clc_nop:
 			break;
 
+#if !KINGPIN
 		//r1ch ************* BEGIN R1Q2 SPECIFIC ****************************
 		case clc_setting:
 			SV_SetClientSetting (cl);
@@ -2995,6 +4114,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 			break;
 //#endif
 		//r1ch ************* END R1Q2 SPECIFIC ****************************
+#endif
 
 		default:
 			Com_Printf ("SV_ExecuteClientMessage: unknown command byte %d from %s\n", LOG_SERVER|LOG_WARNING, c, cl->name);

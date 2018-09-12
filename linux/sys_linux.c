@@ -37,7 +37,9 @@
 
 #include "../qcommon/qcommon.h"
 
+#ifndef DEDICATED_ONLY
 #include "../linux/rw_linux.h"
+#endif
 
 cvar_t *nostdin;
 cvar_t *nostdout;
@@ -190,6 +192,7 @@ static int dlcallback (struct dl_phdr_info *info, size_t size, void *data)
 /* Obtain a backtrace and print it to stderr. 
  * Adapted from http://www.delorie.com/gnu/docs/glibc/libc_665.html
  */
+#if !KINGPIN
 #ifdef __x86_64__
 void Sys_Backtrace (int sig)
 #else
@@ -252,6 +255,7 @@ void Sys_Backtrace (int sig, siginfo_t *siginfo, void *secret)
 
 	raise (SIGSEGV);
 }
+#endif
 
 void Sys_ProcessTimes_f (void)
 {
@@ -326,6 +330,7 @@ void Sys_Init(void)
 #if id386
 //	Sys_SetFPCW();
 #endif
+#if !KINGPIN
   /* Install our signal handler */
 #ifndef __x86_64__
 	struct sigaction sa;
@@ -349,6 +354,7 @@ void Sys_Init(void)
 	sigaction(SIGSEGV, &sa, NULL);
 #else
 	signal (SIGSEGV, Sys_Backtrace);
+#endif
 #endif
 	
 	signal (SIGTERM, Sys_KillServer);
@@ -480,7 +486,7 @@ Loads the game dll
 void *Sys_GetGameAPI (void *parms, int baseq2)
 {
 	void	*(*GetGameAPI) (void *);
-
+	char	newname[MAX_OSPATH]; // MH: added
 	char	name[MAX_OSPATH];
 	char	curpath[MAX_OSPATH];
 	char	*path;
@@ -523,13 +529,24 @@ void *Sys_GetGameAPI (void *parms, int baseq2)
 			if (!path)
 				return NULL;		// couldn't find one anywhere
 			Com_sprintf (name, sizeof(name), "%s/%s/%s", curpath, path, gamename);
+			// MH: check if a new file exists and replace existing if so
+			Com_sprintf (newname, sizeof(newname), "%s/%s/%s.new", curpath, path, gamename);
+			if (Sys_FileLength(newname) != -1)
+			{
+				remove (name);
+				if (rename (newname, name))
+					Com_Printf ("WARNING: %s.new found, failed to replace %s\n", LOG_SERVER|LOG_WARNING, gamename, gamename);
+				else
+					Com_Printf ("%s.new found, renamed to %s\n", LOG_SERVER|LOG_NOTICE, gamename, gamename);
+			}
 			game_library = dlopen (name, RTLD_NOW );
 			if (game_library)
 			{
 				Com_DPrintf ("LoadLibrary (%s)\n",name);
 				break;
 			}
-			else
+			// MH: don't display error or try lazy loading if file doesn't exist
+			else if (Sys_FileLength(name) != -1)
 			{
 				Com_Printf ("dlopen(): %s\n", LOG_SERVER, dlerror());
 				Com_Printf ("Attempting to load with lazy symbols...", LOG_SERVER);
@@ -595,7 +612,11 @@ int main (int argc, char **argv)
 	//
 	
 	if (getuid() == 0 || geteuid() == 0)
+#if KINGPIN
+		Sys_Error ("For security reasons, do not run Kingpin as root.");
+#else
 		Sys_Error ("For security reasons, do not run Quake II as root.");
+#endif
 
 	binary_name = argv[0];
 
@@ -635,7 +656,12 @@ int main (int argc, char **argv)
 			badspins++;
 		else
 			goodspins++;
-		
+
+#if KINGPIN
+		// MH: enforce 24-bit precision to match client
+		Sys_SetFPU ();
+#endif
+
 		Qcommon_Frame (time);
 		oldtime = newtime;
     }
@@ -712,3 +738,48 @@ void Sys_UpdateURLMenu (const char *s)
 {
 	//FIXME
 }
+
+#if KINGPIN
+// MH: worker thread stuff
+#include <pthread.h>
+#include <sys/syscall.h>
+
+typedef struct
+{
+	void *(*func)(void*);
+	void *param;
+	int priority;
+} threadparam;
+
+static void *ThreadPriorityWrapper(void *param)
+{
+	threadparam *tp = param;
+	int tid = syscall(SYS_gettid);
+	int p = getpriority(PRIO_PROCESS, tid);
+	setpriority(PRIO_PROCESS, tid, p - tp->priority);
+	tp->func(tp->param);
+	free(param);
+}
+
+intptr_t Sys_StartThread(void *(*func)(void*), void *param, int priority)
+{
+	pthread_t t;
+	if (priority)
+	{
+		threadparam *tp = malloc(sizeof(*tp));
+		tp->func = func;
+		tp->param = param;
+		tp->priority = priority;
+		pthread_create(&t, NULL, ThreadPriorityWrapper, tp);
+	}
+	else
+		pthread_create(&t, NULL, func, param);
+	return t;
+}
+
+void Sys_WaitThread(intptr_t thread)
+{
+	void *r;
+	pthread_join(thread, &r);
+}
+#endif

@@ -27,9 +27,15 @@ Encode a client frame onto the network channel
 =============================================================================
 */
 
+#ifndef NPROFILE
 unsigned long r1q2DeltaOptimizedBytes = 0;
+#endif
 
+#if KINGPIN
+void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, qboolean force, qboolean newentity, qboolean deltaorigin, int protocol_version)
+#else
 void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, qboolean force, qboolean newentity, int cl_protocol, int protocol_version)
+#endif
 {
 	int		bits;
 
@@ -60,8 +66,9 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 // send an update
 	bits = 0;
 
-	if (to->number >= 256)
-		bits |= U_NUMBER16;		// number8 is implicit otherwise
+// MH: moved below to prevent wasting bandwidth when no other bits are set
+/*	if (to->number >= 256)
+		bits |= U_NUMBER16;		// number8 is implicit otherwise*/
 
 	if (!Float_RoughCompare (to->origin[0], from->origin[0]))
 	{
@@ -99,6 +106,19 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 		bits |= U_ORIGIN2;
 	if (to->origin[2] != from->origin[2])
 		bits |= U_ORIGIN3;*/
+
+#if KINGPIN
+	if (deltaorigin)
+	{
+		if (bits&(U_ORIGIN1|U_ORIGIN2|U_ORIGIN3))
+		{
+			if (fabs(to->origin[0]-from->origin[0]) < 32
+				&& fabs(to->origin[1]-from->origin[1]) < 32
+				&& fabs(to->origin[2]-from->origin[2]) < 32)
+				bits |= U_ORIGINDELTA;
+		}
+	}
+#endif
 
 	if (!Float_RoughCompare (to->angles[0], from->angles[0]))
 	{
@@ -165,6 +185,18 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 			bits |= U_EFFECTS8|U_EFFECTS16;
 	}
 	
+#if KINGPIN
+	if ( to->renderfx != from->renderfx || to->renderfx2 != from->renderfx2 )
+	{
+		int v = to->renderfx2 > to->renderfx ? to->renderfx2 : to->renderfx;
+		if (v < 256)
+			bits |= U_RENDERFX8;
+		else if (v < 0x8000)
+			bits |= U_RENDERFX16;
+		else
+			bits |= U_RENDERFX8|U_RENDERFX16;
+	}
+#else
 	if ( to->renderfx != from->renderfx )
 	{
 		if (to->renderfx < 256)
@@ -174,7 +206,8 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 		else
 			bits |= U_RENDERFX8|U_RENDERFX16;
 	}
-	
+#endif
+
 	if ( to->solid != from->solid )
 		bits |= U_SOLID;
 
@@ -184,17 +217,45 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 	
 	if ( to->modelindex != from->modelindex )
 		bits |= U_MODEL;
+#if !KINGPIN
 	if ( to->modelindex2 != from->modelindex2 )
 		bits |= U_MODEL2;
 	if ( to->modelindex3 != from->modelindex3 )
 		bits |= U_MODEL3;
 	if ( to->modelindex4 != from->modelindex4 )
 		bits |= U_MODEL4;
+#endif
+
+#if KINGPIN
+	if (to->modelindex != 255 || protocol_version < 114)
+	{
+		if (to->num_parts != from->num_parts)
+			bits |= U_NUMPARTS;
+		if (memcmp(to->model_parts, from->model_parts, sizeof(to->model_parts)))
+			bits |= U_MODELPARTS;
+	}
+	else
+	{
+//		if (to->model_parts[3].modelindex == 255 || (from->model_parts[3].modelindex == 255 && to->model_parts[3].modelindex != from->model_parts[3].modelindex))
+		if (to->model_parts[3].modelindex != from->model_parts[3].modelindex)
+			bits |= U_PART3MODEL;
+	}
+#endif
 
 	if ( to->sound != from->sound )
+	{
+#if KINGPIN
+		if (to->sound>255)
+			bits|=U_SOUND16;
+		else
+#endif
 		bits |= U_SOUND;
+	}
 
 	if (
+#if KINGPIN
+		to->renderfx & RF_BEAM
+#else
 		(
 			to->renderfx & RF_FRAMELERP ||
 			(
@@ -210,6 +271,7 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 				!VectorCompare (to->old_origin, from->old_origin)
 			)
 		)
+#endif
 	   )
 	{
 		bits |= U_OLDORIGIN;
@@ -220,7 +282,10 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 	{
 		if (!Vec_RoughCompare (to->old_origin, from->old_origin))
 		{
-			if (!Vec_ByteCompare (to->old_origin, from->old_origin))
+			// MH: fixed (these are sent *8 not *4)
+			if (!Float_ByteCompare(to->old_origin[0], from->old_origin[0])
+				|| !Float_ByteCompare(to->old_origin[1], from->old_origin[1])
+				|| !Float_ByteCompare(to->old_origin[2], from->old_origin[2]))
 				bits |= U_OLDORIGIN;
 #ifndef NPROFILE
 		else
@@ -229,11 +294,23 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 		}
 	}
 
+#if KINGPIN
+	if (memcmp(&from->model_lighting, &to->model_lighting, sizeof(from->model_lighting)))
+		bits |= U_MODELLIGHT;
+
+	if (to->scale != from->scale)
+		bits |= U_SCALE;
+#endif
+
 	//
 	// write the message
 	//
 	if (!bits && !force)
 		return;		// nothing to send!
+
+	// MH: moved here from above
+	if (to->number >= 256)
+		bits |= U_NUMBER16;		// number8 is implicit otherwise
 
 	//----------
 
@@ -271,12 +348,58 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 
 	if (bits & U_MODEL)
 		MSG_WriteByte (to->modelindex);
+#if !KINGPIN
 	if (bits & U_MODEL2)
 		MSG_WriteByte (to->modelindex2);
 	if (bits & U_MODEL3)
 		MSG_WriteByte (to->modelindex3);
 	if (bits & U_MODEL4)
 		MSG_WriteByte (to->modelindex4);
+#endif
+
+#if KINGPIN
+	if (bits & U_NUMPARTS)
+		MSG_WriteByte (to->num_parts);
+	if (bits & U_MODELPARTS)
+	{
+		int a, c = 0;
+		for (a=0; a<MAX_MODEL_PARTS; a++)
+			if (memcmp(&to->model_parts[a], &from->model_parts[a], sizeof(to->model_parts[a])))
+				c |= 1 << a;
+		MSG_WriteByte (c);
+		for (a=0; a<MAX_MODEL_PARTS; a++)
+		{
+			if (c&(1<<a))
+			{
+				int c2 = 0;
+				if (to->model_parts[a].modelindex != from->model_parts[a].modelindex)
+					c2 |= 1;
+				if (to->model_parts[a].invisible_objects != from->model_parts[a].invisible_objects)
+					c2 |= 2;
+				if (memcmp(&to->model_parts[a].skinnum, &from->model_parts[a].skinnum, sizeof(to->model_parts[a].skinnum)))
+					c2 |= 4;
+				MSG_WriteByte (c2);
+				if (c2 & 1)
+					MSG_WriteByte (to->model_parts[a].modelindex);
+				if (c2 & 2)
+					MSG_WriteByte (to->model_parts[a].invisible_objects);
+				if (c2 & 4)
+				{
+					int a2, c3 = 0;
+					for (a2=0; a2<MAX_MODEL_PARTS; a2++)
+						if (to->model_parts[a].skinnum[a2] != from->model_parts[a].skinnum[a2])
+							c3 |= 1 << a2;
+					MSG_WriteByte (c3);
+					for (a2=0; a2<MAX_MODEL_PARTS; a2++)
+						if (c3 & (1 << a2))
+							MSG_WriteByte (to->model_parts[a].skinnum[a2]);
+				}
+			}
+		}
+	}
+	if (bits & U_PART3MODEL)
+		MSG_WriteByte (to->model_parts[3].modelindex);
+#endif
 
 	if (bits & U_FRAME8)
 		MSG_WriteByte (to->frame);
@@ -305,12 +428,33 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 	else if (bits & U_RENDERFX16)
 		MSG_WriteShort (to->renderfx);
 
-	if (bits & U_ORIGIN1)
-		MSG_WriteCoord (to->origin[0]);		
-	if (bits & U_ORIGIN2)
-		MSG_WriteCoord (to->origin[1]);
-	if (bits & U_ORIGIN3)
-		MSG_WriteCoord (to->origin[2]);
+#if KINGPIN
+	if ((bits & (U_RENDERFX8|U_RENDERFX16)) == (U_RENDERFX8|U_RENDERFX16))
+		MSG_WriteLong (to->renderfx2);
+	else if (bits & U_RENDERFX8)
+		MSG_WriteByte (to->renderfx2);
+	else if (bits & U_RENDERFX16)
+		MSG_WriteShort (to->renderfx2);
+
+	if (bits & U_ORIGINDELTA)
+	{
+		if (bits & U_ORIGIN1)
+			MSG_WriteByte ((int)((to->origin[0] - from->origin[0]) * 4 + 128));
+		if (bits & U_ORIGIN2)
+			MSG_WriteByte ((int)((to->origin[1] - from->origin[1]) * 4 + 128));
+		if (bits & U_ORIGIN3)
+			MSG_WriteByte ((int)((to->origin[2] - from->origin[2]) * 4 + 128));
+	}
+	else
+#endif
+	{
+		if (bits & U_ORIGIN1)
+			MSG_WriteCoord (to->origin[0]);		
+		if (bits & U_ORIGIN2)
+			MSG_WriteCoord (to->origin[1]);
+		if (bits & U_ORIGIN3)
+			MSG_WriteCoord (to->origin[2]);
+	}
 
 	if (bits & U_ANGLE1)
 		MSG_WriteAngle(to->angles[0]);
@@ -328,17 +472,36 @@ void SV_WriteDeltaEntity (const entity_state_t *from, const entity_state_t *to, 
 
 	if (bits & U_SOUND)
 		MSG_WriteByte (to->sound);
+#if KINGPIN
+	else if (bits & U_SOUND16)
+		MSG_WriteShort (to->sound);
+#endif
 
 	if (bits & U_EVENT)
 		MSG_WriteByte (to->event);
 
 	if (bits & U_SOLID)
 	{
+#if !KINGPIN
 		if (protocol_version >= MINOR_VERSION_R1Q2_32BIT_SOLID)
 			MSG_WriteLong (svs.entities[to->number].solid2);
 		else
+#endif
 			MSG_WriteShort (to->solid);
 	}
+
+#if KINGPIN
+	if (bits & U_SCALE)
+		MSG_WriteByte ((int)((to->scale + 1) * 127));
+
+	if (bits & U_MODELLIGHT)
+	{
+		int c=0, a;
+		for (a=0; a<to->model_lighting.num_dir_lights; a++)
+			c += (to->model_lighting.light_indexes[a] + 1) << (a * 10);
+		MSG_WriteLong(c);
+	}
+#endif
 }
 
 /*
@@ -362,7 +525,9 @@ static void SV_EmitPacketEntities (const client_t *cl, const client_frame_t /*@n
 //	removedindex = 0;
 
 	//r1: pointless waste of byte since this is already inside an svc_frame
+#if !KINGPIN
 	if (cl->protocol != PROTOCOL_R1Q2)
+#endif
 	{
 		MSG_BeginWriting (svc_packetentities);
 	}
@@ -390,10 +555,12 @@ static void SV_EmitPacketEntities (const client_t *cl, const client_frame_t /*@n
 
 	while (newindex < to->num_entities || oldindex < from_num_entities)
 	{
+#if !KINGPIN
 		//r1: anti-packet overflow
 		//note, worst case delta will generate 47 bytes of output. this should be extremely rare so we use 40.
 		if (sv_packetentities_hack->intvalue && MSG_GetLength() + msg->cursize >= (msg->maxsize - 40))
 			break;
+#endif
 
 		if (newindex >= to->num_entities)
 			newnum = 9999;
@@ -428,7 +595,11 @@ static void SV_EmitPacketEntities (const client_t *cl, const client_frame_t /*@n
 			// note that players are always 'newentities', this updates their oldorigin always
 			// and prevents warping
 
+#if KINGPIN
+			SV_WriteDeltaEntity (oldent, newent, false, false, (sv.framenum+newnum)%20, cl->protocol_version);
+#else
 			SV_WriteDeltaEntity (oldent, newent, false, newent->number <= maxclients->intvalue, cl->protocol, cl->protocol_version);
+#endif
 
 			oldindex++;
 			newindex++;
@@ -437,14 +608,22 @@ static void SV_EmitPacketEntities (const client_t *cl, const client_frame_t /*@n
 	
 		if (newnum < oldnum)
 		{	// this is a new entity, send it from the baseline
+#if KINGPIN
+			SV_WriteDeltaEntity (&cl->lastlines[newnum], newent, true, true, false, cl->protocol_version);
+#else
 			SV_WriteDeltaEntity (&cl->lastlines[newnum], newent, true, true, cl->protocol, cl->protocol_version);
+#endif
 			newindex++;
 			continue;
 		}
 
 		if (newnum > oldnum)
 		{	// the old entity isn't present in the new message
+#if KINGPIN
+			SV_WriteDeltaEntity (oldent, NULL, true, false, false, cl->protocol_version);
+#else
 			SV_WriteDeltaEntity (oldent, NULL, true, false, cl->protocol, cl->protocol_version);
+#endif
 			oldindex++;
 			continue;
 		}
@@ -482,7 +661,11 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 	ps = &to->ps;
 
 	extraflags = 0;
+#if KINGPIN
+	enhanced = 0;
+#else
 	enhanced = (client->protocol == PROTOCOL_R1Q2);
+#endif
 
 	if (!from)
 		ops = &null_playerstate;
@@ -490,7 +673,9 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 		ops = &from->ps;
 
 	//r1: cap to byte range for these
+#if !KINGPIN
 	Vec_RangeCap (ps->viewoffset, -32, 31.75);
+#endif
 	Vec_RangeCap (ps->kick_angles, -32, 31.75);
 
 	//r1: fix signed char range errors
@@ -571,7 +756,9 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 
 	if (!Vec_RoughCompare (ps->viewoffset, ops->viewoffset))
 	{
+#if !KINGPIN
 		if (!Vec_ByteCompare (ps->viewoffset, ops->viewoffset))
+#endif
 			pflags |= PS_VIEWOFFSET;
 #ifndef NPROFILE
 		else
@@ -580,10 +767,14 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 	}
 
 	needViewAngleDeltas =
+#if KINGPIN
+		true;
+#else
 		((client->settings[CLSET_RECORDING]) ||
         (sv_optimize_deltas->intvalue == 1 && client->protocol != PROTOCOL_R1Q2) ||
         (ps->pmove.pm_type >= PM_DEAD) ||
 		(sv_optimize_deltas->intvalue == 0));
+#endif
 
 	//why are we even sending these back to client? optimize.
 	if (needViewAngleDeltas)
@@ -681,7 +872,9 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 		*(int *)&ps->blend[2] != *(int *)&ops->blend[2] ||
 		*(int *)&ps->blend[3] != *(int *)&ops->blend[3])
 	{
+#if !KINGPIN
 		if (!client->settings[CLSET_NOBLEND] || client->settings[CLSET_RECORDING])
+#endif
 		{
 			//special range checking here since we aren't *4 any more
 			if ((int)(ps->blend[0]*255) != (int)(ops->blend[0]*255) ||
@@ -714,7 +907,9 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 
 	if (ps->gunframe != ops->gunframe)
 	{
+#if !KINGPIN
 		if (!client->settings[CLSET_NOGUN] || client->settings[CLSET_RECORDING])
+#endif
 		{
 			pflags |= PS_WEAPONFRAME;
 			if (!enhanced)
@@ -758,6 +953,19 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 #endif
 	}
 
+#if KINGPIN
+	if (ps->gunindex != ops->gunindex)
+		pflags |= PS_WEAPONINDEX;
+	else
+	{
+		for (i=0; i<MAX_MODEL_PARTS; i++)
+			if (memcmp(&ps->model_parts[i], &ops->model_parts[i], sizeof(ps->model_parts[i])))
+			{
+				pflags |= PS_WEAPONINDEX;
+				break;
+			}
+	}
+#else
 	if (ps->gunindex != ops->gunindex)
 	{
 		if (!client->settings[CLSET_NOGUN] || client->settings[CLSET_RECORDING])
@@ -767,6 +975,7 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 			svs.r1q2CustomBytes++;
 #endif
 	}
+#endif
 
 	//
 	// write it
@@ -847,7 +1056,11 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 	{
 		MSG_WriteChar ((int)(ps->viewoffset[0]*4));
 		MSG_WriteChar ((int)(ps->viewoffset[1]*4));
+#if KINGPIN
+		MSG_WriteAngle16 (ps->viewoffset[2]);
+#else
 		MSG_WriteChar ((int)(ps->viewoffset[2]*4));
+#endif
 	}
 
 	if (pflags & PS_VIEWANGLES)
@@ -875,6 +1088,46 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 	if (pflags & PS_WEAPONINDEX)
 	{
 		MSG_WriteByte (ps->gunindex);
+#if KINGPIN
+		{
+			int i, c = 0;
+			for (i=0; i<MAX_MODEL_PARTS; i++)
+				if (memcmp(&ps->model_parts[i], &ops->model_parts[i], sizeof(ps->model_parts[i])))
+					c |= 1 << i;
+			MSG_WriteByte (c);
+			for (i=0; i<MAX_MODEL_PARTS; i++)
+			{
+				if (c&(1<<i))
+				{
+					int c2 = 0;
+					if (ps->model_parts[i].modelindex != ops->model_parts[i].modelindex)
+						c2 |= 1;
+					if (ps->model_parts[i].invisible_objects != ops->model_parts[i].invisible_objects)
+						c2 |= 2;
+					if (memcmp(&ps->model_parts[i].skinnum, &ops->model_parts[i].skinnum, sizeof(ps->model_parts[i].skinnum)))
+						c2 |= 4;
+					MSG_WriteByte (c2);
+					if (c2 & 1)
+						MSG_WriteByte (ps->model_parts[i].modelindex);
+					if (c2 & 2)
+						MSG_WriteByte (ps->model_parts[i].invisible_objects);
+					if (c2 & 4)
+					{
+						int i2, c3 = 0;
+						for (i2=0; i2<MAX_MODEL_PARTS; i2++)
+						{
+							if (ps->model_parts[i].skinnum[i2]!=ops->model_parts[i].skinnum[i2])
+								c3 |= 1 << i2;
+						}
+						MSG_WriteByte (c3);
+						for (i2=0; i2<MAX_MODEL_PARTS; i2++)
+							if (c3 & (1 << i2))
+								MSG_WriteByte (ps->model_parts[i].skinnum[i2]);
+					}
+				}
+			}
+		}
+#endif
 	}
 
 	if (pflags & PS_WEAPONFRAME)
@@ -983,6 +1236,7 @@ static int SV_WritePlayerstateToClient (const client_frame_t /*@null@*/*from, cl
 	return extraflags;
 }
 
+#if !KINGPIN
 void SV_SendPlayerUpdates (int msec_to_next_frame)
 {
 	client_t		*cl, *target;
@@ -1073,6 +1327,7 @@ void SV_SendPlayerUpdates (int msec_to_next_frame)
 		}
 	}
 }
+#endif
 
 /*
 ==================
@@ -1087,16 +1342,28 @@ void SV_WriteFrameToClient (client_t *client, sizebuf_t *msg)
 
 	framenum = sv.randomframe;
 
+#if KINGPIN
+	framenum += sv.framenum;
+#else
 	if (client->state < cs_spawned)
 		framenum += sv.framenum;
 	else
 		framenum += sv.time / (1000 / client->settings[CLSET_FPS]);
+#endif
 
 //Com_Printf ("%i -> %i\n", client->lastframe, sv.framenum);
 	// this is the frame we are creating
 	frame = &client->frames[framenum & UPDATE_MASK];
 
-	if (client->lastframe <= 0)
+	// MH: client demo needs to start with a non-delta frame
+	if (client->demofile && client->demostart > client->lastframe)
+	{
+		if (client->demostart > framenum)
+			client->demostart = framenum;
+		oldframe = NULL;
+		lastframe = -1;
+	}
+	else if (client->lastframe <= 0)
 	{	// client is asking for a retransmit
 		oldframe = NULL;
 		lastframe = -1;
@@ -1113,9 +1380,20 @@ void SV_WriteFrameToClient (client_t *client, sizebuf_t *msg)
 		lastframe = client->lastframe;
 	}
 
+#if KINGPIN
+	// MH: workaround for facing ceiling/floor after spawning/teleporting bug in client
+	if (!client->patched && oldframe && abs(frame->ps.pmove.delta_angles[0] - oldframe->ps.pmove.delta_angles[0]) > 0x8000 && !frame->ps.viewangles[0])
+	{
+		MSG_BeginWriting(svc_stufftext);
+		MSG_WriteString("centerview\n");
+		MSG_EndWriting(msg);
+	}
+#endif
+
 	serverByteIndex = msg->cursize;
 	SZ_WriteByte (msg, 0);
 
+#if !KINGPIN
 	//pack pack pack....
 	if (client->protocol == PROTOCOL_R1Q2)
 	{
@@ -1140,6 +1418,7 @@ void SV_WriteFrameToClient (client_t *client, sizebuf_t *msg)
 #endif
 	}
 	else
+#endif
 	{
 		SZ_WriteLong (msg, framenum);
 		SZ_WriteLong (msg, lastframe);	// what we are delta'ing from
@@ -1156,6 +1435,7 @@ void SV_WriteFrameToClient (client_t *client, sizebuf_t *msg)
 	// delta encode the playerstate
 	extraflags = SV_WritePlayerstateToClient (oldframe, frame, msg, client);
 
+#if !KINGPIN
 	//HOLY CHRIST
 	if (client->protocol == PROTOCOL_R1Q2)
 	{
@@ -1163,6 +1443,7 @@ void SV_WriteFrameToClient (client_t *client, sizebuf_t *msg)
 		msg->data[extraDataIndex] = client->surpressCount + ((extraflags & 0x0F) << 4);
 	}
 	else
+#endif
 	{
 		msg->data[serverByteIndex] = svc_frame;
 		msg->data[extraDataIndex] = client->surpressCount;
@@ -1242,21 +1523,23 @@ static qboolean SV_CheckPlayerVisible(vec3_t Angles, vec3_t start, const edict_t
 
 	FastVectorCopy (ent->s.origin, entOrigin);
 	
-	if ( predictEnt && ent->client ) {
+	if ( predictEnt && ent->client )
+	{
 		for (i = 0; i < 3; i++)
 			entOrigin[i] += ent->client->ps.pmove.velocity[i] * 0.125f * 0.15f;
 	}
 
 	FastVectorCopy (entOrigin, ends[0]);
 
+	// MH: get mid-point
+	ends[0][0] += (ent->mins[0]+ent->maxs[0])/2;
+	ends[0][1] += (ent->mins[1]+ent->maxs[1])/2;
+	ends[0][2] += (ent->mins[2]+ent->maxs[2])/2;
+
 	if ( fullCheck )
 	{
-		vec3_t	right, up;
-
 		for (i = 1; i < 9; i++)
 			FastVectorCopy (entOrigin, ends[i]);
-
-		AngleVectors(Angles, NULL, right, up);
 
 		ends[1][0] += ent->mins[0];
 		ends[2][0] += ent->mins[0];
@@ -1288,14 +1571,37 @@ static qboolean SV_CheckPlayerVisible(vec3_t Angles, vec3_t start, const edict_t
 	}
 	else
 	{
-		num = 1;
+		// MH: check the top too when not doing all corners
+		ends[1][0] = ends[0][0];
+		ends[1][1] = ends[0][1];
+		ends[1][2] = entOrigin[2] + ent->maxs[2];
+
+		num = 2;
 	}
 
-	for (i = 0; i < num; i++) {
+	for (i = 0; i < num; i++)
+	{
 		trace = SV_Trace(start, NULL, NULL, ends[i], NULL, CONTENTS_SOLID);
 
 		if (trace.fraction == 1)
 			return true;
+
+#if KINGPIN
+		// MH: handle see-thru obstacles
+		#define	RF2_SURF_ALPHA		512
+		#define CONTENTS_ALPHA		128
+		if ((trace.ent->s.renderfx2 & RF2_SURF_ALPHA) || (trace.contents & CONTENTS_ALPHA))
+		{
+			vec3_t	dir;
+			vec3_t	alpha_start;
+			VectorSubtract (ends[i], start, dir);
+			VectorNormalize (dir);
+			VectorMA (trace.endpos, 4*3, dir, alpha_start);
+			trace = SV_Trace(alpha_start, NULL, NULL, ends[i], NULL, CONTENTS_SOLID);
+			if (trace.fraction == 1)
+				return true;
+		}
+#endif
 	}
 
 	return false;
@@ -1326,10 +1632,18 @@ void SV_BuildClientFrame (client_t *client)
 	const byte				*clientphs;
 	const byte				*bitvector;
 
+#if KINGPIN
+	int						parts = 0;
+#endif
+
 	// *********** NiceAss Start ************
 	qboolean	visible;
 	vec3_t		start;
 	// ***********  NiceAss End  ************
+
+	// MH: predicted position stuff
+	vec3_t					start2;
+	qboolean				got_start2 = false;
 
 	//union player_state_t	*hax;
 	//player_state_t		*ps;
@@ -1342,14 +1656,18 @@ void SV_BuildClientFrame (client_t *client)
 
 	framenum = sv.randomframe;
 
+#if KINGPIN
+	framenum += sv.framenum;
+#else
 	if (client->state < cs_spawned)
 		framenum += sv.framenum;
 	else
 		framenum += sv.time / (1000 / client->settings[CLSET_FPS]);
+#endif
 
 	frame = &client->frames[framenum & UPDATE_MASK];
 
-	frame->senttime = svs.realtime; // save it for ping calc later
+	frame->senttime = curtime; // save it for ping calc later (MH: using wall clock (not server time))
 
 	//hax = &clent->client->ps;
 
@@ -1383,6 +1701,10 @@ void SV_BuildClientFrame (client_t *client)
 
 	c_fullsend = 0;
 
+#if KINGPIN
+	// MH: don't send any entities if disabled by game DLL
+	if (!(svs.game_features & GMF_CLIENTNOENTS) || !clent->client->noents)
+#endif
 	for (e=1 ; e<ge->num_edicts ; e++)
 	{
 		ent = EDICT_NUM(e);
@@ -1391,18 +1713,14 @@ void SV_BuildClientFrame (client_t *client)
 		if (ent->svflags & SVF_NOCLIENT)
 			continue;
 
-		visible = true;
-
-		if (svs.game_features & GMF_CLIENTNUM)
-		{
-			//send player to himself when he's current POV, but not otherwise
-			if (e == client->edict->client->clientNum + 1 && clent != ent)
-				visible = false;
-		}
-
 		// ignore ents without visible models unless they have an effect
+#if KINGPIN
+		if (!ent->s.modelindex && !ent->s.effects && !ent->s.sound
+			&& !ent->s.event && !ent->s.num_parts)
+#else
 		if (!ent->s.modelindex && !ent->s.effects && !ent->s.sound
 			&& !ent->s.event && !client->entity_events[e])
+#endif
 			continue;
 
 		if (!ent->inuse)
@@ -1466,7 +1784,11 @@ void SV_BuildClientFrame (client_t *client)
 						continue;		// not visible
 				}
 
+#if KINGPIN
+				if (!ent->s.modelindex && !ent->s.num_parts && !ent->s.effects)
+#else
 				if (ent->s.sound && !ent->s.modelindex && !ent->s.effects && !ent->s.event)
+#endif
 				{	
 					// don't send sounds if they will be attenuated away
 					vec3_t	delta;
@@ -1480,7 +1802,20 @@ void SV_BuildClientFrame (client_t *client)
 			}
 		}
 
-		if (visible && sv_nc_visibilitycheck->intvalue && !(sv_nc_clientsonly->intvalue && !ent->client) && ent->solid != SOLID_BSP && ent->solid != SOLID_TRIGGER)
+		visible = true;
+
+		if (svs.game_features & GMF_CLIENTNUM)
+		{
+			//send player to himself when he's current POV, but not otherwise
+			if (e == clent->client->clientNum + 1 && clent != ent)
+				visible = false;
+		}
+
+#if KINGPIN
+		// MH: don't bother hiding things from spectators or checking the client itself
+		if (!(clent->svflags & SVF_NOCLIENT) && ent != clent)
+#endif
+		if (visible && sv_nc_visibilitycheck->intvalue && !(sv_nc_clientsonly->intvalue && !ent->client) && ent->solid != SOLID_BSP /*&& ent->solid != SOLID_TRIGGER*/ && ent->solid != SOLID_NOT) // MH: hide pickups too if non-clients enabled, and don't remove non-solids
 		{
 			// *********** NiceAss Start ************
 			FastVectorCopy (org, start);
@@ -1488,26 +1823,57 @@ void SV_BuildClientFrame (client_t *client)
 		
 			if (!visible)
 			{
-				FastVectorCopy (org, start);
-
 				// If the first direct check didn't see the player, check a little ahead
 				// of yourself based on your current velocity, lag, frame update speed (100ms). 
 				// This will compensate for clients predicting where they will be due to lag
 				// (cl_predict)
-				for (i = 0; i < 3; i++)
-					start[i] += clent->client->ps.pmove.velocity[i] * 0.125f * ( 0.15f + (float)clent->client->ping * 0.001f );
-					
-				visible = SV_CheckPlayerVisible (clent->client->ps.viewangles, start, ent, false, true);
 
-				if ( !visible )
+				// MH: calculate predicted position only once
+				if (!got_start2)
 				{
-					FastVectorCopy (org, start);
-					// If the first/second direct check didn't see the player, check a little above
-					// of yourself based on your current velocity. This will compensate for
-					// clients predicting where they will be due to lag (cl_predict)
-					start[2] += ent->maxs[2];
-					visible = SV_CheckPlayerVisible (clent->client->ps.viewangles, start, ent, false, true);
+					vec3_t vel;
+					trace_t	trace;
+
+					// MH: velocity
+					for (i = 0; i < 3; i++)
+						vel[i] = clent->client->ps.pmove.velocity[i] * 0.125f;
+
+					for (i = 0; i < 3; i++)
+						start2[i] = org[i] + vel[i] * ( 0.15f + (float)clent->client->ping * 0.001f );
+
+					// MH: check if hitting an obstacle
+					trace = SV_Trace(org, (vec_t*)clent->mins, (vec_t*)clent->maxs, start2, NULL, CONTENTS_SOLID);
+					if (trace.fraction < 1)
+					{
+						// MH: slide along the obstacle
+						PM_ClipVelocity (vel, trace.plane.normal, vel, 1.01f);
+						for (i = 0; i < 3; i++)
+							start2[i] = trace.endpos[i] + vel[i] * ( 0.15f + (float)clent->client->ping * 0.001f ) * (1 - trace.fraction);
+						trace = SV_Trace(trace.endpos, (vec_t*)clent->mins, (vec_t*)clent->maxs, start2, NULL, CONTENTS_SOLID);
+						FastVectorCopy (trace.endpos, start2);
+					}
+					got_start2 = true;
 				}
+				visible = SV_CheckPlayerVisible (clent->client->ps.viewangles, start2, ent, false, true);
+
+#if KINGPIN
+				// MH: check if player was visible last frame and keep them visible for extra frames (in case of back-and-forth movement)
+				if (!visible)
+				{
+					client_frame_t *oldframe = &client->frames[(framenum - 1) & UPDATE_MASK];
+					for (i=0; i<oldframe->num_entities; i++)
+					{
+						state = &svs.client_entities[(oldframe->first_entity+i)%svs.num_client_entities];
+						if (state->number == e && state->modelindex && state->broken_flag <= (clent->client->ping + 50) / 100)
+						{
+							visible = 2 + state->broken_flag;
+							break;
+						}
+						if (state->number >= e)
+							break;
+					}
+				}
+#endif
 			}
 
 			// Don't send player at all. 100% secure but no footsteps unless you see the person.
@@ -1516,8 +1882,12 @@ void SV_BuildClientFrame (client_t *client)
 
 			// Don't send player at all IF there are no events/sounds/etc (like footsteps!) even
 			// if the visibilitycheck is "1" and not "2". Hopefully harder on wallhackers.
-			if (!visible && sv_nc_visibilitycheck->intvalue == 1 &&
+			if (!visible &&
+#if KINGPIN
+				!ent->s.effects && !ent->s.sound && !ent->s.event)
+#else
 				!ent->s.effects && !ent->s.sound && !ent->s.event && !client->entity_events[e])
+#endif
 				continue;
 		}
 		// ***********  NiceAss End  ************
@@ -1537,12 +1907,20 @@ void SV_BuildClientFrame (client_t *client)
 
 		*state = ent->s;
 
+#if KINGPIN
+		// MH: store number of extra frames since becoming invisible
+		if (visible > 1)
+			state->broken_flag = visible - 1; // broken_flag isn't sent to clients
+#endif
+
+#if !KINGPIN
 		//hack for variable FPS and events
 		if (!ent->s.event && client->entity_events[e])
 		{
 			state->event = client->entity_events[e];
 			client->entity_events[e] = 0;
 		}
+#endif
 
 		// *********** NiceAss Start ************
 		// Send the entity, but don't associate a model with it. Less secure than sv_nc_visibilitycheck 2
@@ -1550,16 +1928,38 @@ void SV_BuildClientFrame (client_t *client)
 		if (!visible)
 		{
 			// Remove any model associations. Invisible.
+#if KINGPIN
+			state->modelindex = state->num_parts = 0;
+
+			// MH: prevent chasecam target's name appearing in crosshair
+			if ((svs.game_features & GMF_CLIENTNUM) && e == clent->client->clientNum + 1)
+				state->solid = 0;
+#else
 			state->modelindex = state->modelindex2 = state->modelindex3 = state->modelindex4 = 0;
 	
 			// I think this holds the weapon for VWEP
 			state->skinnum = 0;
+#endif
 		}
 		// ***********  NiceAss End  ************
 
 		// don't mark players missiles as solid
-		if (ent->owner == client->edict)
+		if (ent->owner == clent)
 			state->solid = 0;
+
+#if KINGPIN
+		if (client->patched < 4)
+		{
+			// MH: EF_COLOR_SHELL + RF2_MONEYBAG = r_cullaliasmodel errors
+			#define RF2_MONEYBAG		256
+			if ((state->effects & EF_COLOR_SHELL) && (state->renderfx2 & RF2_MONEYBAG))
+				state->renderfx2 &= ~RF2_MONEYBAG;
+		}
+
+		// MH: count entities
+		if (state->modelindex || state->num_parts)
+			parts += (state->num_parts ? state->num_parts : 1);
+#endif
 
 		//r1: extended uptime fix (hmm, changing to unsigned should work just as well)
 		svs.next_client_entities++;
@@ -1569,9 +1969,58 @@ void SV_BuildClientFrame (client_t *client)
 		//Com_Printf ("next will be %d, should be %d\n", 1 % svs.num_client_entities, svs.next_client_entities%svs.num_client_entities);
 
 		//r1: break out at 128 ents since the client renderer dll can only process 128 anyway...
-		if (++frame->num_entities > 128)
+		if (++frame->num_entities == 128)
 			break;
 	}
+
+#if KINGPIN
+/*
+	MH: The player's gun can sometimes disappear because the Kingpin client tries to add the gun to
+	its entity list last, which it can't do if the list is full (128 other entities). Each entity
+	can need multiple entities to display on the client side. "parts" counts them, but it may be
+	1-2 short for each player with a hat/cigar and it doesn't include temp entities (up to 48
+	explosions/gibs), so the actual number can be much higher. To leave room for those extra
+	entities, we'll try to limit the entities to 70 by removing any that are behind.
+*/
+	if (parts > 70 && clent->client->ps.gunindex && !(clent->client->ps.pmove.pm_flags & PMF_CHASECAM))
+	{
+		int j;
+		vec3_t front;
+		AngleVectors(clent->client->ps.viewangles, front, NULL, NULL);
+		for (j=i=0; i<frame->num_entities; i++)
+		{
+			int slot = (frame->first_entity+i)%svs.num_client_entities;
+			state = svs.client_entities + slot;
+			e = state->number;
+			ent = EDICT_NUM(e);
+			// not removing live players or invisible entities
+			if (parts > 70 && (!ent->client || (ent->svflags & SVF_DEADMONSTER)) && (state->modelindex || state->num_parts))
+			{
+				vec3_t d;
+				vec_t s = (ent->size[0] > ent->size[1] ? ent->size[0] : ent->size[1]);
+				if (s < ent->size[2]) s = ent->size[2];
+				d[0] = (ent->absmax[0]+ent->absmin[0])/2 - org[0] + front[0]*s;
+				d[1] = (ent->absmax[1]+ent->absmin[1])/2 - org[1] + front[1]*s;
+				d[2] = (ent->absmax[2]+ent->absmin[2])/2 - org[2] + front[2]*s;
+				VectorNormalize(d);
+				if (acos(DotProduct(d, front)) > 170.f / 360 * M_PI)
+				{
+					parts -= (state->num_parts ? state->num_parts : 1);
+					// remove the entity if it has no sound and hasn't changed since the baseline (takes minimal bandwidth to put back)
+					if (!state->sound && !state->event && !memcmp(state, client->lastlines + e, sizeof(*state)))
+						continue;
+					// otherwise just hide it
+					state->modelindex = state->num_parts = 0;
+				}
+			}
+			if (i != j)
+				svs.client_entities[(frame->first_entity+j)%svs.num_client_entities] = *state;
+			j++;
+		}
+		frame->num_entities = j;
+		svs.next_client_entities -= i - j;
+	}
+#endif
 }
 
 
@@ -1609,10 +2058,19 @@ void SV_RecordDemoMessage (void)
 		// ignore ents without visible models unless they have an effect
 		if (ent->inuse &&
 			ent->s.number && 
+#if KINGPIN
+//			ent->client &&
+			(ent->s.modelindex || ent->s.effects || ent->s.sound || ent->s.event || ent->s.num_parts) && 
+#else
 			(ent->s.modelindex || ent->s.effects || ent->s.sound || ent->s.event) && 
+#endif
 			!(ent->svflags & SVF_NOCLIENT))
 		{
+#if KINGPIN
+			SV_WriteDeltaEntity (&null_entity_state, &ent->s, false, true, false, 100);
+#else
 			SV_WriteDeltaEntity (&null_entity_state, &ent->s, false, true, PROTOCOL_ORIGINAL, 0);
+#endif
 			MSG_EndWriting (&buf);
 		}
 

@@ -30,7 +30,11 @@ static unsigned long long net_packets_out;
 int			server_port;
 //netadr_t	net_local_adr;
 
+#if KINGPIN
+static int			ip_sockets[3] = {0}; // MH: extra socket for Gamespy status requests
+#else
 static int			ip_sockets[2];
+#endif
 
 char *NET_ErrorString (void);
 
@@ -248,7 +252,7 @@ int	NET_GetPacket (netsrc_t sock, netadr_t *net_from, sizebuf_t *net_message)
 			Com_DPrintf ("NET_GetPacket: Called recvmsg() for extended error details for %s\n", NET_ErrorString());
 
 			//linux 2.2 (maybe others) fails to properly fill in the msg_name structure.
-			Com_DPrintf ("(msgname) family %d, host: %s, port: %d, flags: %d\n", from.sin_family, inet_ntoa (from.sin_addr), from.sin_port, msg.msg_flags);
+			Com_DPrintf ("(msgname) family %d, host: %s, port: %d, flags: %d\n", from.sin_family, inet_ntoa (from.sin_addr), ntohs(from.sin_port), msg.msg_flags); // MH: added ntohs
 
 			e = NULL;
 
@@ -275,7 +279,7 @@ int	NET_GetPacket (netsrc_t sock, netadr_t *net_from, sizebuf_t *net_message)
 			{
 				//for some unknown reason, the kernel zeroes out the port in SO_EE_OFFENDER, so this is pretty much useless
 				struct sockaddr_in *sin = (struct sockaddr_in *)SO_EE_OFFENDER(e);
-				Com_DPrintf ("(ICMP) family %d, host: %s, port: %d\n", sin->sin_family, inet_ntoa (sin->sin_addr), sin->sin_port);
+				Com_DPrintf ("(ICMP) family %d, host: %s, port: %d\n", sin->sin_family, inet_ntoa (sin->sin_addr), ntohs(sin->sin_port)); // MH: added ntohs
 
 				//but better than nothing if using  buggy kernel?
 				if (from.sin_family == AF_UNSPEC)
@@ -434,6 +438,17 @@ int NET_IPSocket (char *net_interface, int port)
 		{
 			Com_Printf ("UDP_OpenSocket: Couldn't set IP_RECVERR: %s\n", LOG_NET, NET_ErrorString());
 		}
+	}
+
+#if KINGPIN
+	// MH: don't bother with TOS on Gamespy status socket
+	if (port != server_port - 10)
+#endif
+	{
+		// MH: set TOS to low delay
+		i = 0x10;
+		if (setsockopt (newsocket, IPPROTO_IP, IP_TOS, (char *)&i, sizeof(i)) == -1)
+			Com_Printf ("UDP_OpenSocket: Couldn't set IP_TOS: %s\n", LOG_NET, NET_ErrorString());
 	}
 
 	if (!net_interface || !net_interface[0] || !Q_stricmp(net_interface, "localhost"))

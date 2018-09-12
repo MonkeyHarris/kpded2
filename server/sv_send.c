@@ -21,6 +21,46 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "server.h"
 
+#if KINGPIN
+// MH: compress a buffer into a svc_cpacket message
+int CompressBuffer(byte *in, int inlen, sizebuf_t *out)
+{
+	static z_stream zs = {0};
+	int maxout, res;
+
+	if (inlen < 60)
+		return 0;
+	maxout = out->maxsize - out->cursize;
+	if (maxout >= inlen)
+		maxout = inlen - 1; // require size reduction
+
+	if (sv_compress->intvalue > Z_BEST_COMPRESSION)
+		Cvar_Set ("sv_compress", va("%d", Z_BEST_COMPRESSION));
+
+	if (!zs.next_in)
+		deflateInit2(&zs, sv_compress->intvalue, Z_DEFLATED, -12, 8, Z_DEFAULT_STRATEGY);
+	else
+	{
+		deflateReset(&zs); // reuse stream to save time
+		if (sv_compress->modified)
+			deflateParams(&zs, sv_compress->intvalue, Z_DEFAULT_STRATEGY);
+	}
+	sv_compress->modified = false;
+
+	zs.next_in = in;
+	zs.avail_in = inlen;
+	zs.next_out = out->data + out->cursize + 3; // leave 3 bytes for svc_cpacket header
+	zs.avail_out = maxout - 3;
+	res = deflate(&zs, Z_FINISH);
+	if (res != Z_STREAM_END)
+		return 0;
+	SZ_WriteByte(out, svc_cpacket);
+	SZ_WriteShort(out, zs.total_out);
+	out->cursize += zs.total_out;
+	return zs.total_out + 3;
+}
+#endif
+
 /*
 =============================================================================
 
@@ -193,6 +233,7 @@ static void SV_AddMessageSingle (client_t *cl, qboolean reliable)
 {
 	int				index;
 	messagelist_t	*next;
+	char			*data; // MH: added
 
 	if (cl->state <= cs_zombie)
 	{
@@ -213,6 +254,31 @@ static void SV_AddMessageSingle (client_t *cl, qboolean reliable)
 	//doesn't want unreliables (irc bots/etc)
 	if (cl->nodata && !reliable)
 		return;
+
+	data = MSG_GetData();
+	if (data[0] == svc_layout)
+	{
+		// MH: check layout messages aren't bigger than the client can handle
+		if (MSG_GetLength() > 1025)
+		{
+			if (sv_gamedebug->intvalue)
+			{
+				Com_Printf ("GAME WARNING: Sending a too big (%d bytes) svc_layout message to %s.\n", LOG_SERVER|LOG_WARNING|LOG_GAMEDEBUG, MSG_GetLength(), cl->name);
+				if (sv_gamedebug->intvalue >= 2)
+					Sys_DebugBreak ();
+			}
+			// truncate it to avoid wasting bandwidth
+			data[1024] = 0;
+			MSG_GetRawMsg()->cursize = 1025;
+		}
+
+		// MH: drop duplicate layout messages
+		if (!strcmp(data + 1, cl->layout) && (!reliable || !cl->layout_unreliable))
+			return;
+		strncpy(cl->layout, data + 1, sizeof(cl->layout) - 1);
+		if (reliable)
+			cl->layout_unreliable = 0;
+	}
 
 	//get next message position
 	index = (int)((cl->msgListEnd - cl->msgListStart)) + 1;
@@ -260,6 +326,30 @@ static void SV_AddMessageSingle (client_t *cl, qboolean reliable)
 
 	//set reliable flag
 	next->reliable = reliable;
+
+	// MH: drop any other pending layout messages
+	if (next->data[0] == svc_layout)
+	{
+		messagelist_t	*message, *last;
+		message = cl->msgListStart;
+		for (;;)
+		{
+			last = message;
+			message = message->next;
+
+			if (message == next)
+				break;
+
+			if (message->data[0] == svc_layout)
+			{
+				if (message->reliable)
+					next->reliable = message->reliable;
+				message = SV_DeleteMessage (cl, message, last);
+
+				SV_MSGListIntegrityCheck (cl);
+			}
+		}
+	}
 }
 
 /*
@@ -468,6 +558,9 @@ void EXPORT SV_Multicast (vec3_t /*@null@*/ origin, multicast_t to)
 					//r1: don't send these types to connecting clients, they are pointless even if reliable.
 						MSG_GetType() == svc_muzzleflash ||
 						MSG_GetType() == svc_muzzleflash2 ||
+#if KINGPIN
+						MSG_GetType() == svc_muzzleflash3 ||
+#endif
 						MSG_GetType() == svc_temp_entity ||
 						MSG_GetType() == svc_print ||
 						MSG_GetType() == svc_sound ||
@@ -476,6 +569,27 @@ void EXPORT SV_Multicast (vec3_t /*@null@*/ origin, multicast_t to)
 				)
 			)
 			continue;
+
+#if KINGPIN
+		// MH: don't send image configstring updates while downloadables are in their place
+		if (client->state != cs_spawned && MSG_GetType() == svc_configstring && sv.dlconfigstrings[0][0])
+		{
+			byte *data = MSG_GetData();
+			short cs = *(short*)(data + 1);
+			if (cs > CS_IMAGES && cs < CS_IMAGES + MAX_IMAGES && sv.dlconfigstrings[cs - CS_IMAGES - 1][0])
+				continue;
+		}
+
+		// MH: don't send temp entities when entities are disabled by the game DLL
+		if ((svs.game_features & GMF_CLIENTNOENTS) && client->edict->client->noents)
+		{
+			if (MSG_GetType() == svc_muzzleflash ||
+				MSG_GetType() == svc_muzzleflash2 ||
+				MSG_GetType() == svc_muzzleflash3 ||
+				MSG_GetType() == svc_temp_entity)
+				continue;
+		}
+#endif
 
 		if (mask)
 		{
@@ -556,6 +670,8 @@ void EXPORT SV_StartSound (vec3_t origin, edict_t *entity, int channel,
 		use_phs = false;
 		channel &= 7;
 	}
+	else if (channel & CHAN_PVS) // MH: PVS only flag
+		use_phs = 2;
 	else
 		use_phs = true;
 
@@ -589,7 +705,7 @@ void EXPORT SV_StartSound (vec3_t origin, edict_t *entity, int channel,
 			|| (entity->solid == SOLID_BSP) 
 			|| origin) {
 			flags |= SND_POS;
-			force_pos = true;
+//			force_pos = true; // MH: disabled
 			}
 
 		// use the entity origin unless it is a bmodel or explicitly specified
@@ -624,19 +740,31 @@ void EXPORT SV_StartSound (vec3_t origin, edict_t *entity, int channel,
 
 		if (use_phs)
 		{
+#if KINGPIN
+			// MH: don't send PHS/PVS sounds when entities are disabled by the game DLL
+			if ((svs.game_features & GMF_CLIENTNOENTS) && client->edict->client->noents)
+				continue;
+#endif
+
 			if (force_pos)
 			{
 				flags |= SND_POS;
+			}
+			// MH: send only to clients in PVS
+			else if (use_phs == 2)
+			{
+				if (!PF_inPVS (client->edict->s.origin, origin))
+					continue;
 			}
 			else
 			{
 				if (!PF_inPHS (client->edict->s.origin, origin))
 					continue;
 
-				if (!PF_inPVS (client->edict->s.origin, origin))
+/*				if (!PF_inPVS (client->edict->s.origin, origin)) // MH: disabled
 					flags |= SND_POS;
 				else
-					flags &= ~SND_POS;
+					flags &= ~SND_POS;*/
 			}
 
 			//server side attenuation calculations, used on doors/plats to avoid multicasting over entire map
@@ -679,6 +807,16 @@ void EXPORT SV_StartSound (vec3_t origin, edict_t *entity, int channel,
 				}
 			}
 		}
+
+#if KINGPIN
+		// MH: drop curse sounds when parental lock is enabled
+		if (client->nocurse)
+		{
+			const char *path = sv.configstrings[CS_SOUNDS + soundindex];
+			if (((!strncmp(path, "actors/male/", 12) || !strncmp(path, "actors/female/", 14)) && strchr(path + 14, '/')) || !strncmp(path, "actors/player/male/profanity/", 29))
+				continue;
+		}
+#endif
 
 		MSG_BeginWriting (svc_sound);
 		MSG_WriteByte (flags);
@@ -757,7 +895,8 @@ void SV_WriteReliableMessages (client_t *client, int buffSize)
 	if (!client->netchan.reliable_length)
 	{
 		messagelist_t	*message, *last;
-		
+		int				lastmsg = -1; // MH: position of last message
+
 		client->netchan.message.maxsize = buffSize;
 
 		message = client->msgListStart;
@@ -786,7 +925,17 @@ void SV_WriteReliableMessages (client_t *client, int buffSize)
 				}
 
 				//it fits, write it in
-				SZ_Write (&client->netchan.message, message->data, message->cursize);
+				// MH: append text to previous message if possible to save a few bytes
+				if (lastmsg >= 0 && message->data[0] == svc_print && message->data[1] < PRINT_CHAT && client->netchan.message.data[lastmsg] == message->data[0] && client->netchan.message.data[lastmsg+1] == message->data[1])
+				{
+					client->netchan.message.cursize--; // remove terminator
+					SZ_Write (&client->netchan.message, message->data + 2, message->cursize - 2);
+				}
+				else
+				{
+					lastmsg = client->netchan.message.cursize; // MH: update position of last message
+					SZ_Write (&client->netchan.message, message->data, message->cursize);
+				}
 
 				//and delete from the message list
 				message = SV_DeleteMessage (client, message, last);
@@ -812,10 +961,37 @@ static qboolean SV_SendClientDatagram (client_t *client)
 	sizebuf_t		msg;
 	int				ret;
 	messagelist_t	*message, *last;
+#if KINGPIN
+	messagelist_t	*rmessage = NULL;
+#endif
 
 #ifndef NDEBUG
 	byte			*wanted;
 #endif
+
+	// MH: stop sending frames if not received anything for 5 seconds (and not recording a client demo)
+	if (curtime - client->netchan.last_received > 5000 && !client->demofile)
+	{
+		message = client->msgListStart;
+		for (;;)
+		{
+			last = message;
+			message = message->next;
+
+			if (!message)
+				break;
+
+			if (!message->reliable)
+			{
+				// MH: reset stored layout if not sending it
+				if (message->data[0] == svc_layout)
+					client->layout[0] = 0;
+
+				message = SV_DeleteMessage (client, message, last);
+			}
+		}
+		return true;
+	}
 
 	//init unreliable portion
 	SZ_Init (&msg, msg_buf, client->netchan.message.buffsize);
@@ -826,7 +1002,9 @@ static qboolean SV_SendClientDatagram (client_t *client)
 	{
 		//fix up maxsize for how much space we can fill up safely.
 		//reliable is full, so we can fill up remainder of the packet.
-		msg.maxsize -= client->netchan.reliable_length;
+		// MH: only deduct if a retransmit is needed
+		if (client->netchan.incoming_acknowledged > client->netchan.last_reliable_sequence && client->netchan.incoming_reliable_acknowledged != client->netchan.reliable_sequence)
+			msg.maxsize -= client->netchan.reliable_length;
 	}
 	else
 	{
@@ -841,6 +1019,9 @@ static qboolean SV_SendClientDatagram (client_t *client)
 
 			if (message->reliable)
 			{
+#if KINGPIN
+				rmessage = message;
+#endif
 #ifndef NDEBUG
 				//for debugging, keep track of this message so we can ensure it was delivered. if not, error out.
 				wanted = message->data;
@@ -864,11 +1045,13 @@ static qboolean SV_SendClientDatagram (client_t *client)
 		SZ_Init (&frame, frame_buf, sizeof(frame_buf));
 		frame.allowoverflow = true;
 
+#if !KINGPIN
 		//adjust for packetentities hack
 		if (sv_packetentities_hack->intvalue == 1 || client->protocol == PROTOCOL_ORIGINAL)
 			frame.maxsize = msg.maxsize;
+#endif
 
-#ifndef NO_ZLIB
+#if !defined(NO_ZLIB) && !KINGPIN
 retryframe:
 #endif
 
@@ -876,6 +1059,107 @@ retryframe:
 		// and the player_state_t
 		SV_WriteFrameToClient (client, &frame);
 
+#if KINGPIN
+		if (!frame.overflowed)
+		{
+			// MH: compress for patched clients if necessary
+			if (sv_compress->intvalue > 0 && client->compress)
+			{
+				int unreliable_size = frame.cursize;
+				message = client->msgListStart;
+				for (;;)
+				{
+					message = message->next;
+					if (!message)
+						break;
+					if (!message->reliable)
+						unreliable_size += message->cursize;
+				}
+recheck:
+				if (unreliable_size > msg.maxsize || unreliable_size + msg.buffsize - msg.maxsize > client->rate / 10)
+				{
+					int framesize = frame.cursize;
+					// first try compressing the reliable message
+					if (rmessage)
+					{
+						if (rmessage->data[0] != svc_cpacket)
+						{
+							int maxsize = msg.maxsize;
+							msg.maxsize = msg.buffsize;
+							if (CompressBuffer(rmessage->data, rmessage->cursize, &msg))
+							{
+								memcpy(rmessage->data, msg.data, msg.cursize);
+								rmessage->cursize = msg.cursize;
+								msg.maxsize -= msg.cursize;
+								SZ_Clear(&msg);
+								goto recheck;
+							}
+							msg.maxsize = maxsize;
+						}
+					}
+					else if (msg.maxsize < msg.buffsize)
+					{
+						if (client->netchan.reliable_buf[0] != svc_cpacket)
+						{
+							int maxsize = msg.maxsize;
+							msg.maxsize = msg.buffsize;
+							if (CompressBuffer(client->netchan.reliable_buf, client->netchan.reliable_length, &msg))
+							{
+								memcpy(client->netchan.reliable_buf, msg.data, msg.cursize);
+								client->netchan.reliable_length = msg.cursize;
+								msg.maxsize -= msg.cursize;
+								SZ_Clear(&msg);
+								goto recheck;
+							}
+							msg.maxsize = maxsize;
+						}
+					}
+					message = client->msgListStart;
+					for (;;)
+					{
+						message = message->next;
+						if (!message)
+							break;
+						if (!message->reliable)
+						{
+							if (frame.cursize + message->cursize > frame.maxsize)
+								break;
+							SZ_Write (&frame, message->data, message->cursize);
+						}
+					}
+					if (CompressBuffer(frame_buf, frame.cursize, &msg))
+					{
+						messagelist_t *end = message;
+						message = client->msgListStart;
+						for (;;)
+						{
+							last = message;
+							message = message->next;
+							if (message == end)
+								break;
+							if (!message->reliable)
+							{
+								// MH: record unreliable layout message to detect loss
+								if (message->data[0] == svc_layout)
+									client->layout_unreliable = client->netchan.outgoing_sequence;
+								message = SV_DeleteMessage (client, message, last);
+							}
+						}
+						goto doneframe;
+					}
+					frame.cursize = framesize;
+					if (CompressBuffer(frame_buf, frame.cursize, &msg))
+						goto doneframe;
+				}
+			}
+			if (frame.cursize <= msg.maxsize)
+				SZ_Write (&msg, frame_buf, frame.cursize);
+			else
+				frame.overflowed = true;
+		}
+		if (frame.overflowed)
+			Com_Printf ("WARNING: Dropped frame for %s (exceeded %d bytes).\n", LOG_SERVER|LOG_WARNING, client->name, msg.maxsize);
+#else
 		//if frame overflowed, we're screwed either way :)
 		if (!frame.overflowed)
 		{
@@ -918,7 +1202,10 @@ retryframe:
 				SZ_Write (&msg, frame_buf, frame.cursize);
 			}
 		}
+#endif
 	}
+
+doneframe:
 
 	if (msg.overflowed)
 	{
@@ -947,39 +1234,60 @@ retryframe:
 				if (message->data[0] == svc_temp_entity)
 				{
 					//don't include trivial in this part
+#if KINGPIN
+					if (message->data[1] == TE_BLOOD || message->data[1] == TE_SPLASH || message->data[1] == TE_SURFACE_SPRITE_ENTITY)
+#else
 					if (message->data[1] == TE_BLOOD || message->data[1] == TE_SPLASH)
+#endif
 						continue;
 
 					//drop some semi-useless repeated effects
+#if KINGPIN
+					if (message->data[1] == TE_GUNSHOT || message->data[1] == TE_BULLET_SPARKS || message->data[1] == TE_SHOTGUN || message->data[1] == TE_GUNSHOT_VISIBLE)
+#else
 					if (message->data[1] == TE_GUNSHOT || message->data[1] == TE_BULLET_SPARKS || message->data[1] == TE_SHOTGUN)
+#endif
 					{
 						//randomly drop some of these
 						if (randomMT() & 1)
 							continue;
 					}
-
-					//not gonna fit, try another one
-					if (msg.cursize + message->cursize > msg.maxsize)
-					{
-						message = SV_DeleteMessage (client, message, last);
-						continue;
-					}
-
-					//write it in
-					SZ_Write (&msg, message->data, message->cursize);
-
-					//free it
-					message = SV_DeleteMessage (client, message, last);
 				}
+				// MH: do sounds in the same pass, including svc_muzzleflash (gunshot sound) and stuffed "play" messages
+				else if (message->data[0] == svc_sound || message->data[0] == svc_muzzleflash || (message->data[0] == svc_stufftext && !strncmp(message->data + 1, "play ", 5)))
+				{
+				}
+#if KINGPIN
+				// MH: svc_muzzleflash3 too
+				else if (message->data[0] == svc_muzzleflash3)
+				{
+				}
+#endif
+				else
+					continue;
+
+				//not gonna fit, try another one
+				if (msg.cursize + message->cursize > msg.maxsize)
+				{
+// MH: the message will be nuked below with logging
+//						message = SV_DeleteMessage (client, message, last);
+					continue;
+				}
+
+				//write it in
+				SZ_Write (&msg, message->data, message->cursize);
+
+				//free it
+				message = SV_DeleteMessage (client, message, last);
 			}
 		}
 
 		SV_MSGListIntegrityCheck (client);
 
-		//recheck how much space we have
+		//recheck how much space is available
 		if (msg.cursize + 8 < msg.maxsize)
 		{
-			//now we write sounds
+			//everything else we can fit
 			message = client->msgListStart;
 			for (;;)
 			{
@@ -991,58 +1299,27 @@ retryframe:
 
 				if (!message->reliable)
 				{
-					if (message->data[0] == svc_sound)
+					//not gonna fit, try another one
+					if (msg.cursize + message->cursize > msg.maxsize)
 					{
-						//not gonna fit, try another one
-						if (msg.cursize + message->cursize > msg.maxsize)
-						{
-							message = SV_DeleteMessage (client, message, last);
-							continue;
-						}
-
-						//write it in
-						SZ_Write (&msg, message->data, message->cursize);
-
-						//free it
-						message = SV_DeleteMessage (client, message, last);
+// MH: the message will be nuked below with logging
+//							message = SV_DeleteMessage (client, message, last);
+						continue;
 					}
+
+					// MH: record unreliable layout message to detect loss
+					if (message->data[0] == svc_layout)
+						client->layout_unreliable = client->netchan.outgoing_sequence;
+
+					//write it in
+					SZ_Write (&msg, message->data, message->cursize);
+
+					//free it
+					message = SV_DeleteMessage (client, message, last);
 				}
 			}
 
 			SV_MSGListIntegrityCheck (client);
-
-			//recheck how much space is available
-			if (msg.cursize + 8 < msg.maxsize)
-			{
-				//everything else we can fit
-				message = client->msgListStart;
-				for (;;)
-				{
-					last = message;
-					message = message->next;
-
-					if (!message)
-						break;
-
-					if (!message->reliable)
-					{
-						//not gonna fit, try another one
-						if (msg.cursize + message->cursize > msg.maxsize)
-						{
-							message = SV_DeleteMessage (client, message, last);
-							continue;
-						}
-
-						//write it in
-						SZ_Write (&msg, message->data, message->cursize);
-
-						//free it
-						message = SV_DeleteMessage (client, message, last);
-					}
-				}
-
-				SV_MSGListIntegrityCheck (client);
-			}
 		}
 	}
 
@@ -1061,9 +1338,18 @@ retryframe:
 		if (!message)
 			break;
 
+#if KINGPIN
+		// MH: keep unreliable stufftext messages (not very time sensitive)
+		if (!message->reliable && message->data[0] != svc_stufftext)
+#else
 		if (!message->reliable)
+#endif
 		{
-			Com_DPrintf ("SCD: Dropped an unreliable %s to %s.\n", svc_strings[*message->data], client->name);
+			// MH: reset stored layout if not sending it
+			if (message->data[0] == svc_layout)
+				client->layout[0] = 0;
+
+			Com_DPrintf ("SCD: Dropped an unreliable %s (%d bytes) to %s.\n", svc_strings[*message->data], message->cursize, client->name);
 			message = SV_DeleteMessage (client, message, last);
 		}
 	}
@@ -1096,6 +1382,10 @@ retryframe:
 		}
 	}
 #endif
+
+	// MH: client demo
+	if (client->demofile)
+		SV_WriteClientDemoMessage (client, msg.cursize, msg.data);
 
 	// send the datagram
 	ret = Netchan_Transmit (&client->netchan, msg.cursize, msg.data);
@@ -1164,6 +1454,7 @@ static qboolean SV_RateDrop (client_t *c)
 	return false;
 }
 
+#if !KINGPIN
 static void SV_SetClientEntityEvents (client_t *cl)
 {
 	edict_t	*e;
@@ -1180,6 +1471,7 @@ static void SV_SetClientEntityEvents (client_t *cl)
 			cl->entity_events[i] = e->s.event;
 	}
 }
+#endif
 
 /*
 =======================
@@ -1239,6 +1531,7 @@ void SV_SendClientMessages (void)
 		if (c->state == cs_free)
 			continue;
 
+#if !KINGPIN
 		// client requested / needs lower frame rate, skip this frame
 		if (c->state == cs_spawned && sv.time % (1000 / c->settings[CLSET_FPS]) != 0)
 		{
@@ -1248,6 +1541,7 @@ void SV_SendClientMessages (void)
 
 		c->last_incoming_sequence = c->netchan.incoming_sequence;
 		c->player_updates_sent = 0;
+#endif
 
 		//r1: totally rewrote how reliable/datagram works. concept of overflow
 		//is now obsolete.
@@ -1267,10 +1561,20 @@ void SV_SendClientMessages (void)
 		}
 		else
 		{
+#if KINGPIN
+			// MH: begin sending if finished caching/compressing file for download
+			if (c->downloadcache && c->downloadcache->fd == -1 && c->downloadsize != c->downloadcache->compsize)
+				PushDownload(c, true);
+#endif
+
 			SV_WriteReliableMessages (c, c->netchan.message.buffsize);
 			// just update reliable	if needed
+#if KINGPIN
+			if (c->netchan.message.cursize || curtime - c->netchan.last_sent > 950)
+#else
 			// r1: write if pending reliable buffer too.
 			if ((!c->netchan.reliable_length && c->netchan.message.cursize) || c->netchan.reliable_length || (unsigned)(curtime - c->netchan.last_sent) > 100)
+#endif
 				Netchan_Transmit (&c->netchan, 0, NULL);
 		}
 	}

@@ -312,6 +312,9 @@ cvar_t * EXPORT Cvar_Get (const char *var_name, const char *var_value, int flags
 	if (var)
 	{
 		var->flags |= flags;
+		// MH: update game info
+		if (!Com_ServerState() && var_value && var_value[0] && (!strcmp(var_name, "gamename") || !strcmp(var_name, "gamedate")))
+			Cvar_Set(var_name, var_value);
 		return var;
 	}
 
@@ -378,6 +381,12 @@ static cvar_t *Cvar_Set2 (const char *var_name, const char *value, qboolean forc
 			return var;
 		}
 	}
+
+#if KINGPIN
+	// MH: replace default "clientdir" value with empty string
+	if (!strcmp(var_name, "clientdir") && !strcmp(value, BASEDIRNAME))
+		value = "";
+#endif
 
 	if (!force)
 	{
@@ -446,8 +455,17 @@ static cvar_t *Cvar_Set2 (const char *var_name, const char *value, qboolean forc
 	if (!strcmp(value, var->string))
 		return var;		// not changed
 
-	old_string = var->string;
-	var->string = CopyString(value, TAGMALLOC_CVAR);
+	// MH: reuse existing memory if large enough
+	if (!var->changed && strlen(value) <= strlen(var->string))
+	{
+		old_string = NULL;
+		strcpy(var->string, value);
+	}
+	else
+	{
+		old_string = var->string;
+		var->string = CopyString(value, TAGMALLOC_CVAR);
+	}
 
 	var->value = (float)atof (var->string);
 	var->intvalue = (int)var->value;
@@ -463,8 +481,9 @@ static cvar_t *Cvar_Set2 (const char *var_name, const char *value, qboolean forc
 
 	if (var->flags & CVAR_USERINFO)
 		userinfo_modified = true;	// transmit at next oportunity
-	
-	Z_Free (old_string);	// free the old value string
+
+	if (old_string)
+		Z_Free (old_string);	// free the old value string
 
 	return var;
 }

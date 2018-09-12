@@ -205,6 +205,7 @@ void Netchan_Setup (netsrc_t sock, netchan_t *chan, netadr_t *adr, int protocol,
 	chan->sock = sock;
 	chan->remote_address = *adr;
 
+#if !KINGPIN
 	if (protocol == PROTOCOL_R1Q2)
 	{
 		if (msglen)
@@ -219,6 +220,7 @@ void Netchan_Setup (netsrc_t sock, netchan_t *chan, netadr_t *adr, int protocol,
 		}
 	}
 	else
+#endif
 	{
 		SZ_Init (&chan->message, chan->message_buf, 1390);			//traditional limit
 	}
@@ -229,6 +231,8 @@ void Netchan_Setup (netsrc_t sock, netchan_t *chan, netadr_t *adr, int protocol,
 	chan->incoming_sequence = 0;
 	chan->outgoing_sequence = 1;
 	chan->message.allowoverflow = true;
+
+	chan->last_sent = curtime; // MH: initialize
 }
 
 /*
@@ -279,9 +283,11 @@ int Netchan_Transmit (netchan_t *chan, int length, const byte *data)
 
 
 // write the packet header
+#if !KINGPIN
 	if (chan->protocol == PROTOCOL_R1Q2)
 		SZ_Init (&send, send_buf, sizeof(send_buf));
 	else
+#endif
 		SZ_Init (&send, send_buf, 1400);
 
 	w1 = ( chan->outgoing_sequence & ~(1<<31) ) | (send_reliable<<31);
@@ -293,6 +299,7 @@ int Netchan_Transmit (netchan_t *chan, int length, const byte *data)
 	SZ_WriteLong (&send, w1);
 	SZ_WriteLong (&send, w2);
 
+#if !DEDICATED_ONLY // MH: not needed in dedicated server
 	// send the qport if we are a client
 	if (chan->sock == NS_CLIENT)
 	{
@@ -301,6 +308,7 @@ int Netchan_Transmit (netchan_t *chan, int length, const byte *data)
 		else if (chan->qport)
 			SZ_WriteByte (&send, chan->qport);
 	}
+#endif
 
 // copy the reliable message to the packet first
 	if (send_reliable)
@@ -309,7 +317,8 @@ int Netchan_Transmit (netchan_t *chan, int length, const byte *data)
 			SZ_Write (&send, chan->reliable_buf, chan->reliable_length);
 		else
 			Com_DPrintf ("Netchan_Transmit: send_reliable with empty buffer to %s!\n", NET_AdrToString (&chan->remote_address));
-		chan->last_reliable_sequence = chan->outgoing_sequence;
+		// MH: fixed to stop waiting for an extra packet before retransmitting
+		chan->last_reliable_sequence = chan->outgoing_sequence - 1;
 	}
 	
 // add the unreliable part if space is available
@@ -331,6 +340,9 @@ int Netchan_Transmit (netchan_t *chan, int length, const byte *data)
 	{
 		if (NET_SendPacket (chan->sock, send.cursize, send_buf, &chan->remote_address) == -1)
 			return -1;
+		// MH: don't sent duplicates if there is no recent packet loss
+		if (!chan->out_dropped)
+			break;
 	}
 
 	if (showpackets->intvalue)
@@ -376,11 +388,15 @@ qboolean Netchan_Process (netchan_t *chan, sizebuf_t *msg)
 	// read the qport if we are a server
 	if (chan->sock == NS_SERVER)
 	{
+#if KINGPIN
+		MSG_ReadShort (msg);
+#else
 		//suck up 2 bytes for original and old r1q2
 		if (chan->protocol != PROTOCOL_R1Q2 || chan->qport > 0xFF)
 			MSG_ReadShort (msg);
 		else if (chan->qport)
 			MSG_ReadByte (msg);
+#endif
 	}
 
 	reliable_message = sequence >> 31;
@@ -436,8 +452,34 @@ qboolean Netchan_Process (netchan_t *chan, sizebuf_t *msg)
 	}
 
 	//r1: pl stats
-	chan->total_received++;
-	chan->total_dropped += chan->dropped;
+	// MH: fixed total
+	chan->in_total += sequence - chan->incoming_sequence;
+	chan->in_dropped += chan->dropped;
+
+	// MH: use acknowledgements to measure server->client packet loss (replaces sv_lag_stats option)
+	if (sequence_ack > chan->incoming_acknowledged)
+	{
+		if (chan->countacks && (curtime - chan->last_received) < 90)
+		{
+			chan->out_total += sequence_ack - chan->incoming_acknowledged;
+			chan->out_dropped += sequence_ack - chan->incoming_acknowledged - 1;
+		}
+		else if (chan->reliable_length && sequence_ack >= chan->last_reliable_sequence)
+		{
+			chan->out_total++;
+			if (reliable_ack != chan->reliable_sequence)
+				chan->out_dropped++;
+		}
+
+		// MH: decay PL counters to make current data more significant
+		if (chan->out_total >= (chan->out_dropped == 1 ? 2000 : 600))
+		{
+			chan->out_total >>= 1;
+			chan->out_dropped >>= 1;
+			chan->in_total >>= 1;
+			chan->in_dropped >>= 1;
+		}
+	}
 
 //
 // if the current outgoing reliable message has been acknowledged
