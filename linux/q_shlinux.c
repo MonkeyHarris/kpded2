@@ -92,6 +92,18 @@ Sys_Milliseconds
 unsigned int curtime;
 unsigned int Sys_Milliseconds (void)
 {
+#if 1
+	// MH: use monotonic clock
+	struct timespec tp;
+	static unsigned int		secbase;
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
+
+	if (!secbase)
+		secbase = tp.tv_sec;
+
+	curtime = (tp.tv_sec - secbase)*1000 + tp.tv_nsec/1000000;
+#else
 	struct timeval tp;
 	struct timezone tzp;
 	static unsigned int		secbase;
@@ -105,6 +117,7 @@ unsigned int Sys_Milliseconds (void)
 	}
 
 	curtime = (tp.tv_sec - secbase)*1000 + tp.tv_usec/1000;
+#endif
 	
 	return curtime;
 }

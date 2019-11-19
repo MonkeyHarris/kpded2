@@ -19,13 +19,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "server.h"
+#include "../geoip/maxminddb.h"
 
 #define	HEARTBEAT_SECONDS	300
 
 netadr_t	master_adr[MAX_MASTERS];	// address of group servers
-
-#ifdef USE_PYROADMIN
-netadr_t	netaddress_pyroadmin;
+#if KINGPIN
+qboolean	master_gs[MAX_MASTERS];		// MH: master servers are Gamespy?
 #endif
 
 client_t	*sv_client;			// current client
@@ -72,10 +72,6 @@ cvar_t	*sv_showclamp;
 
 cvar_t	*hostname;
 cvar_t	*public_server;			// should heartbeats be sent
-
-#ifdef USE_PYROADMIN
-cvar_t	*pyroadminport = &uninitialized_cvar;
-#endif
 
 cvar_t	*sv_locked;
 cvar_t	*sv_restartmap;
@@ -152,6 +148,9 @@ cvar_t	*sv_no_game_serverinfo;
 
 cvar_t	*sv_mapdownload_denied_message;
 cvar_t	*sv_mapdownload_ok_message;
+#if KINGPIN
+cvar_t	*sv_pakdownload_message;
+#endif
 
 #if !KINGPIN
 cvar_t	*sv_downloadserver;
@@ -188,15 +187,6 @@ cvar_t	*sv_rcon_ratelimit;
 
 cvar_t	*sv_show_name_changes;
 
-// MH: log connecting client userinfo
-cvar_t	*sv_log_connectinfo;
-
-// MH: handle name clashes?
-cvar_t	*sv_unique_names;
-
-// MH: broadcast connecting players?
-cvar_t	*sv_show_connections;
-
 cvar_t	*sv_optimize_deltas;
 
 cvar_t	*sv_predict_on_lag;
@@ -226,9 +216,6 @@ cvar_t	*sv_interpolated_pmove;
 cvar_t	*sv_global_master;
 
 #if !KINGPIN
-cvar_t	*sv_cheaternet;
-cvar_t	*sv_cheaternet_action;
-
 cvar_t	*sv_disallow_download_sprites_hack;
 
 cvar_t	*sv_timescale_check;
@@ -241,6 +228,15 @@ cvar_t	*sv_timescale_skew_kick;
 cvar_t	*sv_features;
 cvar_t	*g_features;
 
+// MH: log connecting client userinfo
+cvar_t	*sv_log_connectinfo;
+
+// MH: handle name clashes?
+cvar_t	*sv_unique_names;
+
+// MH: broadcast connecting players?
+cvar_t	*sv_show_connections;
+
 // MH: disable fov zooming
 cvar_t	*sv_no_zoom;
 
@@ -250,6 +246,10 @@ cvar_t	*sv_autoidle;
 
 // MH: minimize memory usage
 cvar_t	*sv_minimize_memory;
+
+// MH: GeoIP database
+cvar_t *sv_geoipdb;
+static MMDB_s mmdb;
 
 #if KINGPIN
 // MH: allow models that are not on the server
@@ -266,38 +266,18 @@ cvar_t	*sv_download_precache;
 
 // MH: upstream bandwidth available
 cvar_t	*sv_bandwidth;
-#endif
 
-#ifdef ANTICHEAT
-cvar_t	*sv_require_anticheat;
-cvar_t	*sv_anticheat_error_action;
-cvar_t	*sv_anticheat_message;
-cvar_t	*sv_anticheat_server_address;
-
-cvar_t	*sv_anticheat_badfile_action;
-cvar_t	*sv_anticheat_badfile_message;
-cvar_t	*sv_anticheat_badfile_max;
-
-cvar_t	*sv_anticheat_nag_time;
-cvar_t	*sv_anticheat_nag_message;
-cvar_t	*sv_anticheat_nag_defer;
-
-cvar_t	*sv_anticheat_show_violation_reason;
-cvar_t	*sv_anticheat_client_disconnect_action;
-cvar_t	*sv_anticheat_forced_disconnect_action;
-
-cvar_t	*sv_anticheat_disable_play;
-cvar_t	*sv_anticheat_client_restrictions;
-cvar_t	*sv_anticheat_force_protocol35;
-
-netblock_t	anticheat_exceptions;
-netblock_t	anticheat_requirements;
+// MH: underwater sound
+cvar_t	*sv_underwater_sound;
 #endif
 
 //r1: not needed
 //cvar_t	*sv_reconnect_limit;	// minimum seconds between connect messages
 
 time_t	server_start_time;
+
+// MH: game start time
+time_t	game_start_time;
 
 blackhole_t			blackholes;
 varban_t			cvarbans;
@@ -314,15 +294,6 @@ linkednamelist_t	clientfiles;
 
 //i hate you snake
 netblock_t			blackhole_exceptions;
-
-#if !KINGPIN
-unsigned			cheaternet_token;
-netadr_t			cheaternet_adr;
-#endif
-
-#ifdef USE_PYROADMIN
-int		pyroadminid;
-#endif
 
 //void Master_Shutdown (void);
 
@@ -390,6 +361,10 @@ void SV_DropClient (client_t *drop, qboolean notify)
 	{
 		MSG_BeginWriting (svc_disconnect);
 		SV_AddMessage (drop, true);
+
+		// MH: send immediately
+		SV_WriteReliableMessages(drop, drop->netchan.message.buffsize);
+		Netchan_Transmit(&drop->netchan, 0, NULL);
 	}
 	else
 	{
@@ -409,10 +384,6 @@ void SV_DropClient (client_t *drop, qboolean notify)
 		// this will remove the body, among other things
 		ge->ClientDisconnect (drop->edict);
 	}
-
-#ifdef ANTICHEAT
-	SV_AntiCheat_Disconnect_Client (drop);
-#endif
 
 	//r1: fix for mods that don't clean score
 	drop->edict->client->ps.stats[STAT_FRAGS] = 0;
@@ -434,10 +405,6 @@ void SV_KickClient (client_t *cl, const char /*@null@*/*reason, const char /*@nu
 //r1: this does the final cleaning up of a client after zombie state.
 void SV_CleanClient (client_t *drop)
 {
-#ifdef ANTICHEAT
-	linkednamelist_t	*bad, *last;
-#endif
-
 	//r1: drop message list
 	if (drop->messageListData)
 	{
@@ -466,37 +433,6 @@ void SV_CleanClient (client_t *drop)
 		Z_Free (drop->lastlines);
 		drop->lastlines = NULL;
 	}
-
-#if !KINGPIN
-	//r1: disconnected before cheatnet message could show?
-	if (drop->cheaternet_message)
-	{
-		Z_Free (drop->cheaternet_message);
-		drop->cheaternet_message = NULL;
-	}
-#endif
-
-#ifdef ANTICHEAT
-	bad = &drop->anticheat_bad_files;
-	last = NULL;
-	while (bad->next)
-	{
-		bad = bad->next;
-
-		if (last)
-		{
-			Z_Free (last->name);
-			Z_Free (last);
-		}
-		last = bad;
-	}
-
-	if (last)
-	{
-		Z_Free (last->name);
-		Z_Free (last);
-	}
-#endif
 
 	// MH: client demo
 	if (drop->demofile)
@@ -611,116 +547,7 @@ static char *StatusString (void)
 
 	//r1: add uptime info
 	if (sv_uptime->intvalue)
-	{
-		char uptimeString[128];
-		char tmpStr[16];
-
-		uint32	secs;
-
-		int days = 0;
-		int hours = 0;
-		int mins = 0;
-		int	years = 0;
-
-		uptimeString[0] = 0;
-		secs = (uint32)(time(NULL) - server_start_time);
-
-		// MH: tweaked
-		years = secs/(60*60*24*365);
-		secs %= 60*60*24*365;
-		days = secs/(60*60*24);
-		secs %= 60*60*24;
-		hours = secs/(60*60);
-		secs %= 60*60;
-		mins = secs/60;
-		secs %= 60;
-
-		if (years)
-		{
-			if (sv_uptime->intvalue == 1)
-			{
-				sprintf (tmpStr, "%d year%s", years, years == 1 ? "" : "s");
-				strcat (uptimeString, tmpStr);
-			}
-			else
-			{
-				days += 365;
-			}
-		}
-
-		if (days)
-		{
-			if (sv_uptime->intvalue == 1)
-			{
-				sprintf (tmpStr, "%dday%s", days, days == 1 ? "" : "s");
-				if (uptimeString[0])
-					strcat (uptimeString, ", ");
-			}
-			else
-			{
-				sprintf (tmpStr, "%d+", days);
-			}
-			strcat (uptimeString, tmpStr);
-		}
-
-		if (sv_uptime->intvalue == 1)
-		{
-			if (hours)
-			{
-				sprintf (tmpStr, "%dhr%s", hours, hours == 1 ? "" : "s");
-				if (uptimeString[0])
-					strcat (uptimeString, ", ");
-				strcat (uptimeString, tmpStr);
-			}
-		}
-		else
-		{
-			if (days || hours)
-			{
-				if (days)
-					sprintf (tmpStr, "%.2d:", hours);
-				else
-					sprintf (tmpStr, "%d:", hours);
-				strcat (uptimeString, tmpStr);
-			}
-		}
-
-		if (sv_uptime->intvalue == 1)
-		{
-			if (mins)
-			{
-				sprintf (tmpStr, "%dmin%s", mins, mins == 1 ? "" : "s");
-				if (uptimeString[0])
-					strcat (uptimeString, ", ");
-				strcat (uptimeString, tmpStr);
-			}
-			else if (!uptimeString[0])
-			{
-				sprintf (uptimeString, "%dsec%s", secs, secs == 1 ? "" : "s");
-			}
-		}
-		else
-		{
-			if (days || hours || mins)
-			{
-				if (hours)
-					sprintf (tmpStr, "%.2d.", mins);
-				else
-					sprintf (tmpStr, "%d.", mins);
-				strcat (uptimeString, tmpStr);
-			}
-			if (days || hours || mins || secs)
-			{
-				if (mins)
-					sprintf (tmpStr, "%.2d", secs);
-				else
-					sprintf (tmpStr, "%d", secs);
-				strcat (uptimeString, tmpStr);
-			}
-		}
-
-		Info_SetValueForKey (serverinfo, "uptime", uptimeString);
-	}
+		Info_SetValueForKey (serverinfo, "uptime", TimeDurationString(time(NULL) - server_start_time, false)); // MH: use new time duration string function
 
 	//r1: hide reserved slots
 	Info_SetValueForKey (serverinfo, "maxclients", va("%d", maxclients->intvalue - sv_reserved_slots->intvalue));
@@ -743,6 +570,23 @@ static char *StatusString (void)
 	return serverinfo;
 }
 
+// MH: get hostname string for server browsers, including game start timer if set
+static char *HostnameString (void)
+{
+	if (game_start_time)
+	{
+		time_t t = time(NULL);
+		if (t < game_start_time)
+		{
+			int d = (game_start_time - t + 59) / 60;
+			return va("%s (starts in %s)", hostname->string, TimeDurationString(d * 60, false));
+		}
+		else
+			game_start_time = 0;
+	}
+	return hostname->string;
+}
+
 static const char *SV_StatusString (void)
 {
 	char	*serverinfo;
@@ -755,6 +599,10 @@ static const char *SV_StatusString (void)
 //	player_state_t	*ps;
 
 	serverinfo = StatusString();
+
+	// MH: include game start timer with hostname if set
+	if (game_start_time)
+		Info_SetValueForKey (serverinfo, "hostname", HostnameString());
 
 	strcpy (status, serverinfo);
 	strcat (status, "\n");
@@ -786,12 +634,12 @@ static qboolean RateLimited (ratelimit_t *limit, int maxCount)
 {
 	int diff;
 
-	diff = sv.time - limit->time;
+	diff = curtime - limit->time; // MH: using wall clock (not server time)
 
 	//a new sampling period
 	if (diff > limit->period || diff < 0)
 	{
-		limit->time = sv.time;
+		limit->time = curtime; // MH: using wall clock (not server time)
 		limit->count = 0;
 	}
 	else
@@ -807,18 +655,32 @@ static void RateSample (ratelimit_t *limit)
 {
 	int diff;
 
-	diff = sv.time - limit->time;
+	diff = curtime - limit->time; // MH: using wall clock (not server time)
 
 	//a new sampling period
 	if (diff > limit->period || diff < 0)
 	{
-		limit->time = sv.time;
+		limit->time = curtime; // MH: using wall clock (not server time)
 		limit->count = 1;
 	}
 	else
 	{
 		limit->count++;
 	}
+}
+
+// MH: check if current packet is from a master server
+static int FromMaster()
+{
+	int i;
+
+	for (i=0; i<MAX_MASTERS; i++)
+	{
+		if (master_adr[i].port && NET_CompareBaseAdr (&master_adr[i], &net_from))
+			return i;
+	}
+
+	return -1;
 }
 
 /*
@@ -852,150 +714,11 @@ SVC_Ack
 */
 static void SVC_Ack (void)
 {
-	int i;
 	//r1: could be used to flood server console - only show acks from masters.
 
-	for (i=0 ; i<MAX_MASTERS ; i++)
-	{
-		if (master_adr[i].port && NET_CompareBaseAdr (&master_adr[i], &net_from))
-		{
-			Com_Printf ("Ping acknowledge from %s\n", LOG_SERVER|LOG_NOTICE, NET_AdrToString(&net_from));
-			break;
-		}
-	}
+	if (FromMaster() >= 0)
+		Com_Printf ("Ping acknowledge from %s\n", LOG_SERVER|LOG_NOTICE, NET_AdrToString(&net_from));
 }
-
-#if !KINGPIN
-static void SVC_CheaterNet_Reply (void)
-{
-	char		*info;
-	char		name[16];
-	unsigned	int_id, int_when, int_token, int_challenge;
-
-	client_t	*cl;
-
-	//only allow response from cnet ip
-	if (!NET_CompareAdr (&net_from, &cheaternet_adr))
-	{
-		Com_DPrintf ("Rejected cheaternet response from non-cheaternet host %s.\n", NET_AdrToString (&net_from));
-		return;
-	}
-
-	//server shut down
-	if (sv.state != ss_game)
-		return;
-
-	info = Cmd_Args ();
-	if (!info[0])
-		return;
-
-	info = StripQuotes (info);
-	if (!info[0])
-		return;
-
-	int_id = atoi(Info_ValueForKey (info, "i"));
-	int_token = strtoul(Info_ValueForKey (info, "t"), NULL, 10);
-	int_challenge = strtoul(Info_ValueForKey (info, "c"), NULL, 10);
-	Q_strncpy (name, Info_ValueForKey (info, "n"), sizeof(name)-1);
-
-	if (!int_token || !int_challenge)
-		return;
-
-	//invalid token
-	if (int_token != cheaternet_token)
-		return;
-
-	if (int_id >= maxclients->intvalue)
-		return;
-
-	cl = &svs.clients[int_id];
-
-	//gone
-	if (cl->state <= cs_zombie)
-		return;
-
-	//stale reply
-	if (cl->challenge != int_challenge)
-		return;
-
-	//if name is present, assume positive response
-	if (name[0])
-	{
-		char		*server, *reason, *when;
-		char		*message;
-		unsigned	secs;
-
-		int days = 0;
-		int hours = 0;
-		int mins = 0;
-
-		char time_string[64];
-
-		when = Info_ValueForKey (info, "w");
-		int_when = strtoul (when, NULL, 10);
-
-		server = Info_ValueForKey (info, "s");
-		reason = Info_ValueForKey (info, "r");
-
-		time_string[0] = 0;
-
-		secs = (unsigned)(time(NULL) - int_when);
-
-		//old data?
-		if (sv_cheaternet->intvalue > 0 && secs / 60 > sv_cheaternet->intvalue)
-			return;
-
-		while (secs/60/60/24 >= 1)
-		{
-			days++;
-			secs -= 60*60*24;
-		}
-
-		while (secs/60/60 >= 1)
-		{
-			hours++;
-			secs -= 60*60;
-		}
-
-		while (secs/60 >= 1)
-		{
-			mins++;
-			secs -= 60;
-		}
-
-		if (days)
-		{
-			if (days == 1)
-				strcpy (time_string, "yesterday");
-			else
-				sprintf (time_string, "%d days ago", days);
-		}
-		else if (hours)
-			sprintf (time_string, "%d hour%s ago", hours, hours == 1 ? "" : "s");
-		else if (mins)
-			sprintf (time_string, "%d minute%s ago", mins, mins == 1 ? "" : "s");
-		else
-			sprintf (time_string, "%d second%s ago", secs, secs == 1 ? "" : "s");
-
-		//log for console
-		Com_Printf ("CHEATERNET: %s[%s] was caught cheating %s on %s as '%s' with '%s'.\n", LOG_SERVER, cl->name, NET_AdrToString(&cl->netchan.remote_address), time_string, server, name, reason);
-
-		if (sv_cheaternet_action->intvalue > 0)
-		{
-			message = va ("CHEATERNET: %s was caught cheating %s on %s as '%s' with '%s'.\n", cl->name, time_string, server, name, reason);
-
-			//broadcast
-			if (cl->state == cs_spawned)
-				SV_BroadcastPrintf (PRINT_HIGH, "%s", message);
-			else
-				cl->cheaternet_message = CopyString (message, TAGMALLOC_NOT_TAGGED);
-
-			if (sv_cheaternet_action->intvalue == 2)
-				SV_KickClient (cl, "cheaternet", "You were kicked because your IP address was recently caught cheating at another server.\n");
-		}
-	}
-}
-#endif
 
 /*
 ================
@@ -1035,7 +758,7 @@ static void SVC_Info (void)
 
 		// MH: crop hostname if required to make string fit buffer, and don't bother with padding
 		Com_sprintf (string, sizeof(string), "%.*s %s %2i/%2i\n",
-			sizeof(string) - strlen(sv.name) - 9, hostname->string, sv.name, count, maxclients->intvalue - sv_reserved_slots->intvalue);
+			sizeof(string) - strlen(sv.name) - 9, HostnameString(), sv.name, count, maxclients->intvalue - sv_reserved_slots->intvalue);
 	}
 
 	Netchan_OutOfBandPrint (NS_SERVER, &net_from, "info\n%s", string);
@@ -1267,22 +990,53 @@ static void SV_UpdateUserinfo (client_t *cl, qboolean notifyGame)
 	if (!sv_allow_any_model->intvalue && !Cvar_IntValue("teamplay"))
 	{
 		char *s;
-		val = Info_ValueForKey (cl->userinfo, "skin");
+		val = Info_ValueForKey(cl->userinfo, "skin");
 		s = strrchr(val, '/');
 		if (s)
 		{
 			*s = 0;
 			Q_strlwr(val);
-			if (strcmp(val, "female_chick") && strcmp(val, "male_thug") && strcmp(val, "male_runt")
-				&& FS_LoadFile(va("players/%s/head.mdx", val), NULL) <= 0)
+			if (strcmp(val, "female_chick") && strcmp(val, "male_thug") && strcmp(val, "male_runt"))
 			{
-				strcpy(cl->badmodel, val);
-				if (cl->skin[0])
-					Info_SetValueForKey (cl->userinfo, "skin", cl->skin);
-				else if (strstr(val, "female"))
-					Info_SetValueForKey(cl->userinfo, "skin", va("female_chick/%03d %03d %03d", 1+(rand()%22), 12+(rand()%10), 1+(rand()%6)));
+				if (FS_LoadFile(va("players/%s/head.mdx", val), NULL) <= 0)
+				{
+					strcpy(cl->badmodel, val);
+					if (cl->skin[0])
+						Info_SetValueForKey(cl->userinfo, "skin", cl->skin);
+					else if (strstr(val, "female"))
+						Info_SetValueForKey(cl->userinfo, "skin", va("female_chick/%03d %03d %03d", 1 + (rand() % 22), 12 + (rand() % 10), 1 + (rand() % 6)));
+					else
+						Info_SetValueForKey(cl->userinfo, "skin", va("male_thug/%03d %03d %03d", 8 + (rand() % 24), 1 + (rand() % 36), 1 + (rand() % 17)));
+				}
 				else
-					Info_SetValueForKey(cl->userinfo, "skin", va("male_thug/%03d %03d %03d", 8+(rand()%24), 1+(rand()%36), 1+(rand()%17)));
+				{
+					// check the skins too
+					qboolean replaced = false;
+					if (FS_LoadFile(va("players/%s/head_%.3s.tga", val, s + 1), NULL) <= 0
+						&& FS_LoadFile(va("players/%s/head_001.tga", val), NULL) > 0)
+					{
+						memcpy(s + 1, "001", 3);
+						replaced = true;
+					}
+					if (FS_LoadFile(va("players/%s/body_%.3s.tga", val, s + 5), NULL) <= 0
+						&& FS_LoadFile(va("players/%s/body_001.tga", val), NULL) > 0)
+					{
+						memcpy(s + 5, "001", 3);
+						replaced = true;
+					}
+					if (FS_LoadFile(va("players/%s/legs_%.3s.tga", val, s + 9), NULL) <= 0
+						&& FS_LoadFile(va("players/%s/legs_001.tga", val), NULL) > 0)
+					{
+						memcpy(s + 9, "001", 3);
+						replaced = true;
+					}
+					if (replaced)
+					{
+						s[0] = '/';
+						strcpy(cl->badmodel, Info_ValueForKey(cl->userinfo, "skin"));
+						Info_SetValueForKey(cl->userinfo, "skin", val);
+					}
+				}
 			}
 		}
 	}
@@ -1396,7 +1150,6 @@ static void SVC_DirectConnect (void)
 	qboolean	reconnected;
 
 	char		*pass;
-	const char	*ac;
 
 	char		saved_var[32];
 	char		saved_val[32];
@@ -1913,6 +1666,26 @@ gotnewcl:
 		// MH: handle name clashes
 		SV_NameClash(newcl, userinfo);
 
+		// MH: lookup country in GeoIP database
+		Info_RemoveKey(userinfo, "country");
+		if (mmdb.filename)
+		{
+			static const char *dbpath[] = { "country", "names", "en", NULL };
+			int mmdb_error;
+			MMDB_entry_data_s entry_data;
+			struct sockaddr sa = { AF_INET, {0, 0, adr->ip[0], adr->ip[1], adr->ip[2], adr->ip[3]} };
+			MMDB_lookup_result_s result = MMDB_lookup_sockaddr(&mmdb, &sa, &mmdb_error);
+			if (result.found_entry && !MMDB_aget_value(&result.entry, &entry_data, dbpath) && entry_data.type == MMDB_DATA_TYPE_UTF8_STRING)
+			{
+				char country[32];
+				if (entry_data.data_size > sizeof(country) - 1)
+					entry_data.data_size = sizeof(country) - 1;
+				memcpy(country, entry_data.utf8_string, entry_data.data_size);
+				country[entry_data.data_size] = 0;
+				Info_SetValueForKey(userinfo, "country", country);
+			}
+		}
+
 		//if (!ge->edicts[0].client)
 		//	Com_Error (ERR_DROP, "Missed a call to InitGame");
 		// get the game a chance to reject this connection or modify the userinfo
@@ -1947,8 +1720,13 @@ gotnewcl:
 		if (sv_show_connections->intvalue)
 		{
 			char	buf[64];
+			char	*name = Info_ValueForKey(userinfo, "name");
+			char	*country = mmdb.filename ? Info_ValueForKey(userinfo, "country") : "";
 
-			Com_sprintf(buf, sizeof(buf), "%s connected\n", Info_ValueForKey(userinfo, "name"));
+			if (country[0])
+				Com_sprintf(buf, sizeof(buf), "%s connected from %s\n", name, country);
+			else
+				Com_sprintf(buf, sizeof(buf), "%s connected\n", name);
 
 			for (i=0,cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
 			{
@@ -1957,6 +1735,10 @@ gotnewcl:
 
 				MSG_BeginWriting (svc_print);
 				MSG_WriteByte (PRINT_CHAT);
+#if KINGPIN
+				if (name[0] == ':' || name[0] == '>')
+					MSG_WriteByte(' '); // add a space so that it isn't confused for normal chat or yellow text
+#endif
 				MSG_WriteString (buf);
 				SV_AddMessage (cl, true);
 			}
@@ -1975,62 +1757,15 @@ gotnewcl:
 	SV_UpdateUserinfo (newcl, reconnected);
 
 	//r1: netchan init was here
-#ifdef ANTICHEAT
-	if (sv_require_anticheat->intvalue && reconnected && SV_AntiCheat_IsConnected())
-	{
-		uint32		network_ip;
-		netblock_t	*n;
-
-		ac = " ac=1";
-
-		network_ip = *(uint32 *)net_from.ip;
-
-		n = &anticheat_requirements;
-
-		newcl->anticheat_required = ANTICHEAT_NORMAL;
-
-		//r1: forced list
-		while (n->next)
-		{
-			n = n->next;
-			if ((network_ip & n->mask) == (n->ip & n->mask))
-			{
-				newcl->anticheat_required = ANTICHEAT_REQUIRED;
-				break;
-			}
-		}
-
-		n = &anticheat_exceptions;
-
-		//r1: exception list
-		while (n->next)
-		{
-			n = n->next;
-			if ((network_ip & n->mask) == (n->ip & n->mask))
-			{
-				newcl->anticheat_required = ANTICHEAT_EXEMPT;
-				ac = "";
-				break;
-			}
-		}
-
-		if (ac[0])
-			SV_AntiCheat_Challenge (&net_from, newcl);
-	}
-	else
-#endif
-		ac = "";
 
 	// send the connect packet to the client
-#if KINGPIN
-	Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect");
-#else
+#if !KINGPIN
 	// r1: note we could ideally send this twice but it prints unsightly message on original client.
 	if (sv_downloadserver->string[0])
-		Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect dlserver=%s%s", sv_downloadserver->string, ac);
+		Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect dlserver=%s", sv_downloadserver->string);
 	else
-		Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect%s", ac);
 #endif
+		Netchan_OutOfBandPrint (NS_SERVER, adr, "client_connect");
 
 	if (sv_connectmessage->modified)
 	{
@@ -2043,14 +1778,8 @@ gotnewcl:
 		sv_connectmessage->modified = false;
 	}
 
-	//send cheaternet query if enabled
 	if (reconnected)
 	{
-#if !KINGPIN
-		if (sv_cheaternet->intvalue && !NET_IsLANAddress (adr) && cheaternet_adr.port)
-			Netchan_OutOfBandPrint (NS_SERVER, &cheaternet_adr, "query\n%u\n%d\n%u\n%s\n%s\n", cheaternet_token, newcl - svs.clients, newcl->challenge, Info_ValueForKey (userinfo, "name"), NET_AdrToString (adr));
-#endif
-
 		//only show message on reconnect
 		if (sv_connectmessage->string[0])
 			Netchan_OutOfBandPrint (NS_SERVER, adr, "print\n%s\n", sv_connectmessage->string);
@@ -2088,12 +1817,9 @@ gotnewcl:
 	newcl->lastmessage = svs.realtime - ((timeout->intvalue - 5) * 1000);
 
 	// MH: set default packetdup
-	if (newcl->rate >= 15000)
-	{
-		newcl->netchan.packetdup = sv_packetdup->intvalue;
-		if (newcl->netchan.packetdup > sv_max_packetdup->intvalue)
-			newcl->netchan.packetdup = sv_max_packetdup->intvalue;
-	}
+	newcl->netchan.packetdup = sv_packetdup->intvalue;
+	if (newcl->netchan.packetdup > sv_max_packetdup->intvalue)
+		newcl->netchan.packetdup = sv_max_packetdup->intvalue;
 
 	// MH: disable idle mode
 	if (g_idle->intvalue)
@@ -2368,32 +2094,6 @@ static void SVC_RemoteCommand (void)
 		Com_Error (ERR_HARD, "server killed via rcon");
 }
 
-#ifdef USE_PYROADMIN
-static void SVC_PyroAdminCommand (char *s)
-{
-	if (pyroadminid && atoi(Cmd_Argv(1)) == pyroadminid)
-	{
-		char	*p = s;
-		char	remaining[1024];
-
-		memset (remaining, 0, sizeof(remaining));
-
-		while (*p && *p != ' ')
-			p++;
-
-		p++;
-
-		while (*p && *p != ' ')
-			p++;
-
-		p++;
-
-		Com_Printf ("pyroadmin>> %s\n", LOG_SERVER, p);
-		Cmd_ExecuteString (p);
-	}
-}
-#endif
-
 /*
 =================
 SV_ConnectionlessPacket
@@ -2404,8 +2104,8 @@ Clients that are in the game can still send
 connectionless packets.
 =================
 */
-// MH: separated from SV_ConnectionlessPacket so that it can be used on Gamespy requests too
-static qboolean CheckBlackholes (void)
+// MH: separated from SV_ConnectionlessPacket so that it can be used on Gamespy packets too
+static qboolean CheckBlackholes (qboolean reply)
 {
 	netblock_t	*whitehole = &blackhole_exceptions;
 	blackhole_t *blackhole = &blackholes;
@@ -2429,8 +2129,8 @@ static qboolean CheckBlackholes (void)
 		blackhole = blackhole->next;
 		if ((network_ip & blackhole->mask) == (blackhole->ip & blackhole->mask))
 		{
-			//do rate limiting in case there is some long-ish reason
-			if (blackhole->method == BLACKHOLE_MESSAGE)
+			//do rate limiting in case there is some long-ish reason (MH: don't send any in reply to GS packets)
+			if (blackhole->method == BLACKHOLE_MESSAGE && reply)
 			{
 				RateSample (&blackhole->ratelimit);
 				if (!RateLimited (&blackhole->ratelimit, 2))
@@ -2448,7 +2148,8 @@ static void SV_ConnectionlessPacket (void)
 	char		*s;
 	char		*c;
 
-	if (CheckBlackholes()) return;
+	if (CheckBlackholes(true))
+		return;
 
 	//r1: should never happen, don't even bother trying to parse it
 	if (net_message.cursize > 544)
@@ -2495,14 +2196,6 @@ static void SV_ConnectionlessPacket (void)
 		SVC_RemoteCommand ();
 	else if (!strcmp(c, "ack"))
 		SVC_Ack ();
-#if !KINGPIN
-	else if (!strcmp(c, "cheaternetreply"))
-		SVC_CheaterNet_Reply ();
-#endif
-#ifdef USE_PYROADMIN
-	else if (!strcmp (c, "cmd"))
-		SVC_PyroAdminCommand (s);
-#endif
 	else
 		Com_DPrintf ("bad connectionless packet from %s:\n%s\n"
 		, NET_AdrToString (&net_from), s);
@@ -2510,6 +2203,29 @@ static void SV_ConnectionlessPacket (void)
 
 
 //============================================================================
+
+/*
+===================
+SV_CalcPings
+
+Updates the cl->ping variables
+===================
+*/
+static void SV_CalcPings(void)
+{
+	int			i;
+	client_t	*cl;
+
+	for (i = 0; i < maxclients->intvalue; i++)
+	{
+		cl = &svs.clients[i];
+		if (cl->state != cs_spawned)
+			continue;
+
+		// MH: just copy the already calculated ping
+		cl->edict->client->ping = cl->ping;
+	}
+}
 
 /*
 ===================
@@ -2550,7 +2266,7 @@ static void SV_GiveMsec (void)
 			if (cl->initialRealTime)
 			{
 				diff = cl->totalMsecUsed - (curtime - cl->initialRealTime);
-				cl->commandMsecOverflowCount += diff / 1000.f; // tracking the overflow in seconds
+				cl->commandMsecOverflowCount += diff;
 				cl->commandMsecOverflowCount *= 0.96f; // allow 4% leeway
 				if (cl->commandMsecOverflowCount < 0)
 					cl->commandMsecOverflowCount = 0; // no accumulated time allowance
@@ -2559,7 +2275,7 @@ static void SV_GiveMsec (void)
 					Com_DPrintf ("%s has diff %d (%d %d) %.3f\n", cl->name, diff, cl->totalMsecUsed, (curtime - cl->initialRealTime), cl->commandMsecOverflowCount);
 
 #if KINGPIN
-				if (sv_enforcetime->intvalue && sv_enforcetime_kick->value && cl->commandMsecOverflowCount > sv_enforcetime_kick->value && !(cl->edict->svflags & SVF_NOCLIENT))
+				if (sv_enforcetime->intvalue && sv_enforcetime_kick->value && cl->commandMsecOverflowCount > sv_enforcetime_kick->value * 1000 && !(cl->edict->svflags & SVF_NOCLIENT))
 #else
 				if (sv_enforcetime->intvalue && cl->commandMsecOverflowCount > sv_enforcetime->value && !(cl->edict->svflags & SVF_NOCLIENT))
 #endif
@@ -2570,7 +2286,7 @@ static void SV_GiveMsec (void)
 			}
 
 			cl->totalMsecUsed = 0;
-			cl->initialRealTime = (curtime - cl->netchan.last_received < 100 ? cl->netchan.last_received : curtime - 100); // allow up to 100ms more for next packet
+			cl->initialRealTime = cl->netchan.last_received;
 #else
 			//r1: better? speed cheat detection via use of msec underflows
 			if (cl->commandMsec < 0)
@@ -2695,6 +2411,181 @@ static void SV_GiveMsec (void)
 }
 
 
+#if KINGPIN
+// MH: Gamespy "secure" coding, taken from GSMSALG 0.3.3 by Luigi Auriemma
+byte gsvalfunc(int reg)
+{
+	if (reg < 26) return(reg + 'A');
+	if (reg < 52) return(reg + 'G');
+	if (reg < 62) return(reg - 4);
+	if (reg == 62) return('+');
+	if (reg == 63) return('/');
+	return(0);
+}
+
+byte *gsseckey(byte *dst, byte *src, byte *key)
+{
+	int    i, size, keysz;
+	byte   enctmp[256], tmp[66], x, y, z, a, b, *p;
+
+	size = strlen(src);
+	if ((size < 1) || (size > 65)) {
+		dst[0] = 0;
+		return(dst);
+	}
+	keysz = strlen(key);
+
+	for (i = 0; i < 256; i++) {
+		enctmp[i] = i;
+	}
+
+	a = 0;
+	for (i = 0; i < 256; i++) {
+		a += enctmp[i] + key[i % keysz];
+		x = enctmp[a];
+		enctmp[a] = enctmp[i];
+		enctmp[i] = x;
+	}
+
+	a = 0;
+	b = 0;
+	for (i = 0; src[i]; i++) {
+		a += src[i] + 1;
+		x = enctmp[a];
+		b += x;
+		y = enctmp[b];
+		enctmp[b] = x;
+		enctmp[a] = y;
+		tmp[i] = src[i] ^ enctmp[(x + y) & 0xff];
+	}
+	for (size = i; size % 3; size++) {
+		tmp[size] = 0;
+	}
+
+	p = dst;
+	for (i = 0; i < size; i += 3) {
+		x = tmp[i];
+		y = tmp[i + 1];
+		z = tmp[i + 2];
+		*p++ = gsvalfunc(x >> 2);
+		*p++ = gsvalfunc(((x & 3) << 4) | (y >> 4));
+		*p++ = gsvalfunc(((y & 15) << 2) | (z >> 6));
+		*p++ = gsvalfunc(z & 63);
+	}
+	*p = 0;
+
+	return(dst);
+}
+
+// MH: process a Gamespy packet
+static void SV_GamespyPacket(void)
+{
+	// GamespyLite and most master servers can handle large packets, so not bothering to split them here
+	static int	qid;
+	char		*s, buf[8192];
+	int			i, count, len, master;
+	qboolean	status;
+
+	if (sv_hidestatus->intvalue)
+		return;
+
+	if (CheckBlackholes(false))
+		return;
+
+	if (net_message.cursize > 40)
+	{
+		Com_DPrintf("Dropped %d byte GS packet from %s\n", net_message.cursize, NET_AdrToString(&net_from));
+		return;
+	}
+
+	MSG_BeginReading(&net_message);
+	s = MSG_ReadStringLine(&net_message);
+
+	Com_DPrintf("GS Packet %s : %s\n", NET_AdrToString(&net_from), s);
+
+	if (s[0] != '\\')
+		return;
+
+	master = FromMaster();
+
+	RateSample(&svs.ratelimit_status);
+	if (master < 0 && RateLimited(&svs.ratelimit_status, sv_ratelimit_status->intvalue))
+	{
+		Com_DPrintf("Dropped GS request from %s\n", NET_AdrToString(&net_from));
+		return;
+	}
+
+	len = 0;
+
+	status = !!strstr(s, "\\status\\");
+
+	if (status || strstr(s, "\\basic\\"))
+		len += Com_sprintf(buf + len, sizeof(buf) - len, "\\gamename\\kingpin\\gamever\\kpded " VERSION "\\location\\%s", Cvar_Get("location", "0", 0)->string);
+
+	if (status || strstr(s, "\\info\\"))
+	{
+		for (count = i = 0; i < maxclients->intvalue; i++)
+			if (svs.clients[i].state >= cs_spawning)
+				count++;
+
+		len += Com_sprintf(buf + len, sizeof(buf) - len, "\\hostname\\%s\\hostport\\%d\\mapname\\%s\\gametype\\%s\\numplayers\\%d\\maxplayers\\%d\\gamemode\\openplaying",
+			HostnameString(), server_port, sv.name, Cvar_VariableString("gamename"), count, maxclients->intvalue - sv_reserved_slots->intvalue);
+	}
+
+	if (status || strstr(s, "\\rules\\"))
+	{
+		char *rules = StatusString();
+
+		// exclude conflicting and duplicate info
+		Info_RemoveKey(rules, "gamename");
+		Info_RemoveKey(rules, "hostname");
+		Info_RemoveKey(rules, "mapname");
+
+		len += Com_sprintf(buf + len, sizeof(buf) - len, "%s", rules);
+	}
+
+	if (!sv_hideplayers->intvalue && (status || strstr(s, "\\players\\")))
+	{
+		for (count = i = 0; i < maxclients->intvalue; i++)
+			if (svs.clients[i].state >= cs_spawning)
+			{
+				len += Com_sprintf(buf + len, sizeof(buf) - len, "\\player_%d\\%s\\frags_%d\\%d\\ping_%d\\%d\\deaths_%d\\%d",
+					count, svs.clients[i].name, count, svs.clients[i].edict->client->ps.stats[STAT_FRAGS], count, svs.clients[i].ping, count, svs.clients[i].edict->client->ps.stats[STAT_DEPOSITED]);
+				if (g_features->intvalue & GMF_CLIENTTEAM)
+					len += Com_sprintf(buf + len, sizeof(buf) - len, "\\team_%d\\%d", count, svs.clients[i].edict->client->team);
+				count++;
+				if (len > sizeof(buf) - 140)
+					break;
+			}
+	}
+
+	s = strstr(s, "\\secure\\");
+	if (s)
+	{
+		char auth[89];
+		char *e = strchr(s + 8, '\\');
+		if (e)
+			*e = 0;
+		gsseckey(auth, s + 8, "QFWxY2"); // "QFWxY2" = Kingpin's key
+		len += Com_sprintf(buf + len, sizeof(buf) - len, "\\validate\\%s", auth);
+	}
+
+	if (len)
+	{
+		len += Com_sprintf(buf + len, sizeof(buf) - len, "\\final\\\\queryid\\%u.1", ++qid);
+		NET_SendPacket(NS_SERVER_GS, len, buf, &net_from);
+
+		if (master >= 0 && !master_gs[master])
+		{
+			// mark the master server as Gamespy
+			master_gs[master] = true;
+			if (public_server->intvalue == 1)
+				Com_DPrintf("Master %s is Gamespy compatible, not sending Quake2 heartbeats\n", NET_AdrToString(&master_adr[master]));
+		}
+	}
+}
+#endif
+
 /*
 =================
 SV_ReadPackets
@@ -2705,10 +2596,6 @@ static void SV_ReadPackets (void)
 	int			i, j;
 	client_t	*cl;
 	uint16		qport;
-
-#if KINGPIN
-	unsigned	last_received;
-#endif
 
 	//Com_Printf ("ReadPackets\n");
 	for (;;)
@@ -2863,10 +2750,6 @@ static void SV_ReadPackets (void)
 			if (cl->notes & NOTE_OVERFLOWED)
 				continue;
 
-#if KINGPIN
-			last_received = (cl->netchan.countacks ? cl->netchan.last_received : 0);
-#endif
-
 			if (Netchan_Process(&cl->netchan, &net_message))
 			{	// this is a valid, sequenced packet, so process it
 				if (cl->state != cs_zombie)
@@ -2884,30 +2767,6 @@ static void SV_ReadPackets (void)
 							cl->layout[0] = 0; // lost so clear stored layout
 						cl->layout_unreliable = 0;
 					}
-
-#if KINGPIN
-					// MH: measure the connection's latency consistency (client->server)
-					if (last_received && !cl->netchan.dropped && cl->lastcmd.msec && cl->lastcmd.msec < 200)
-					{
-						int d = cl->netchan.last_received - last_received - cl->lastcmd.msec;
-						if (d >= -1)
-						{
-							d += (d >> 1) - 1;
-							if (d < 0)
-								d = 0;
-							if (d > 100)
-								d = 100;
-							if (d > cl->quality)
-								cl->quality += (d - cl->quality) * 0.075f;
-							else
-							{
-								cl->quality += (d - cl->quality) * 0.1f / (cl->fps > 30 ? cl->fps : 30);
-								if (cl->quality < 0.1)
-									cl->quality = 0;
-							}
-						}
-					}
-#endif
 
 					//r1: send a reply immediately if the client is connecting
 					if ((cl->state == cs_connected || cl->state == cs_spawning) && cl->msgListStart->next)
@@ -2928,78 +2787,16 @@ static void SV_ReadPackets (void)
 	}
 
 #if KINGPIN
-	// MH: handle Gamespy status requests
+	// MH: process Gamespy packets
 	for (;;)
 	{
 		j = NET_GetPacket(NS_SERVER_GS, &net_from, &net_message);
+
 		if (!j)
 			break;
 
-		if (sv_hidestatus->intvalue)
-			continue;
-
 		if (j == 1)
-		{
-			static int	qid = 0;
-			char		*s, buf[16384];
-			int			len;
-
-			if (CheckBlackholes())
-				continue;
-
-			MSG_BeginReading(&net_message);
-			s = MSG_ReadStringLine(&net_message);
-
-			Com_DPrintf ("GS Packet %s : %s\n", NET_AdrToString(&net_from), s);
-
-			// GamespyLite can handle large packets, so not bothering to split them here
-			qid++;
-			len = 0;
-
-			if (!strcmp(s, "\\status\\"))
-			{
-				int count;
-
-				RateSample (&svs.ratelimit_status);
-
-				if (RateLimited (&svs.ratelimit_status, sv_ratelimit_status->intvalue))
-				{
-					Com_DPrintf ("Dropped GS status request from %s\n", NET_AdrToString (&net_from));
-					continue;
-				}
-
-				for (count=i=0; i<maxclients->intvalue ;i++)
-					if (svs.clients[i].state >= cs_spawning)
-						count++;
-
-				len += Com_sprintf(buf + len, sizeof(buf) - len, "\\gamename\\kingpin\\gamever\\kpded " VERSION "\\location\\%s\\hostname\\%s\\hostport\\%d\\mapname\\%s\\gametype\\%s\\numplayers\\%d\\maxplayers\\%d\\gamemode\\openplaying%s",
-					Cvar_Get("location", "0", 0)->string, hostname->string, server_port, sv.name, Cvar_VariableString("gamename"), count, maxclients->intvalue - sv_reserved_slots->intvalue, StatusString());
-
-				if (!sv_hideplayers->intvalue)
-				{
-					for (count=i=0; i<maxclients->intvalue; i++)
-						if (svs.clients[i].state >= cs_spawning)
-						{
-							len += Com_sprintf(buf + len, sizeof(buf) - len, "\\player_%d\\%s\\frags_%d\\%d\\ping_%d\\%d\\deaths_%d\\%d",
-								count, svs.clients[i].name, count, svs.clients[i].edict->client->ps.stats[STAT_FRAGS], count, svs.clients[i].ping, count, svs.clients[i].edict->client->ps.stats[STAT_DEPOSITED]);
-							if (g_features->intvalue & GMF_CLIENTTEAM)
-								len += Com_sprintf(buf + len, sizeof(buf) - len, "\\team_%d\\%d", count, svs.clients[i].edict->client->team);
-							count++;
-							if (len > sizeof(buf) - 120)
-								break;
-						}
-				}
-			}
-			else
-			{
-				// ignoring any other requests
-				qid--;
-				continue;
-			}
-
-			len += Com_sprintf(buf + len, 32, "\\final\\\\queryid\\%u.1", qid);
-			NET_SendPacket(NS_SERVER_GS, len, buf, &net_from);
-		}
+			SV_GamespyPacket();
 	}
 #endif
 }
@@ -3023,7 +2820,6 @@ static void SV_CheckTimeouts (void)
 	client_t	*cl;
 	int			droppoint;
 	int			zombiepoint;
-	int			clientcount = 0; // MH: count clients
 #if KINGPIN
 	int			dlrate = 0;
 #endif
@@ -3044,10 +2840,6 @@ static void SV_CheckTimeouts (void)
 			cl->state = cs_free;	// can now be reused
 			continue;
 		}
-
-		// MH: count clients
-		if (cl->state)
-			clientcount++;
 
 		if (cl->state >= cs_connected)
 		{
@@ -3131,7 +2923,10 @@ static void SV_CheckTimeouts (void)
 				// MH: send pending bad model message
 				if (cl->badmodel[0] && cl->moved)
 				{
-					SV_ClientPrintf(cl, PRINT_HIGH, "This server does not have the %s model\n", cl->badmodel);
+					if (strchr(cl->badmodel, '/'))
+						SV_ClientPrintf(cl, PRINT_HIGH, "This server does not have the \"%s\" skins, replaced with \"%s\"\n", cl->badmodel, cl->skin);
+					else
+						SV_ClientPrintf(cl, PRINT_HIGH, "This server does not have the %s model\n", cl->badmodel);
 					cl->badmodel[0] = 0;
 				}
 #endif
@@ -3176,10 +2971,6 @@ static void SV_CheckTimeouts (void)
 #endif
 		}
 	}
-
-	// MH: activate auto-idle mode if there are no clients
-	if (sv_autoidle->intvalue && !g_idle->intvalue && !clientcount)
-		Cvar_ForceSet("g_idle", "1");
 }
 
 /*
@@ -3247,8 +3038,7 @@ static void SV_RunGameFrame (void)
 		// never get more than one tic behind
 		if (sv.time < svs.realtime)
 		{
-			// MH: disable clamp warning when in idle mode
-			if (sv_showclamp->intvalue && !g_idle->intvalue)
+			if (sv_showclamp->intvalue && sv.framenum > 1) // MH: 1st frame is always clamped
 				Com_Printf ("sv highclamp: %u < %d = %d\n", LOG_SERVER, sv.time, svs.realtime, svs.realtime - sv.time);
 			svs.realtime = sv.time;
 		}
@@ -3258,7 +3048,6 @@ static void SV_RunGameFrame (void)
 	if (host_speeds->intvalue)
 		time_after_game = Sys_Milliseconds ();
 #endif
-
 }
 
 /*
@@ -3286,20 +3075,12 @@ static void Master_Heartbeat (void)
 
 	svs.last_heartbeat = curtime; // MH: using wall clock (not server time)
 
-	// MH: refresh global master server IP (if there are no connected clients)
-	if (sv_global_master->intvalue)
-	{
-		for (i=0 ; i<maxclients->intvalue ; i++)
-		{
-			if (svs.clients[i].state)
-				break;
-		}
-		if (i == maxclients->intvalue)
-			NET_StringToAdr (GLOBAL_MASTER, &master_adr[0]);
-	}
+	// MH: refresh global master server IP if there are no connected clients
+	if (sv_global_master->intvalue && SV_CountPlayers() == 0)
+		NET_StringToAdr (GLOBAL_MASTER, &master_adr[0]);
 
-	// send the same string that we would give for a status OOB command
-	string = SV_StatusString();
+	// MH: don't generate status string until needed below
+	string = NULL;
 
 	// send to group master
 	for (i=0 ; i<MAX_MASTERS ; i++)
@@ -3309,15 +3090,18 @@ static void Master_Heartbeat (void)
 			Com_Printf ("Sending heartbeat to %s\n", LOG_SERVER|LOG_NOTICE, NET_AdrToString (&master_adr[i]));
 #if KINGPIN
 			// MH: send a Gamespy heartbeat
-			if (public_server->intvalue & 2)
+			if (public_server->intvalue < 3)
 			{
 				char buf[64];
 				Com_sprintf(buf, sizeof(buf), "\\heartbeat\\%d\\gamename\\kingpin", server_port - 10);
 				NET_SendPacket (NS_SERVER_GS, strlen(buf), buf, &master_adr[i]);
-				if (!(public_server->intvalue & 1))
+				if (master_gs[i] || public_server->intvalue == 2)
 					continue;
 			}
 #endif
+			// send the same string that we would give for a status OOB command
+			if (!string)
+				string = SV_StatusString();
 			Netchan_OutOfBandPrint (NS_SERVER, &master_adr[i], "heartbeat\n%s", string);
 		}
 	}
@@ -3365,6 +3149,24 @@ static void SV_RunPmoves (int msec)
 	}
 }
 
+// MH: activate auto-idle mode if the server is empty
+static void SV_CheckAutoIdle (void)
+{
+	int		i;
+	client_t	*cl;
+
+	if (!sv_autoidle->intvalue || g_idle->intvalue)
+		return;
+
+	for (i=0,cl=svs.clients ; i<maxclients->intvalue ; i++,cl++)
+	{
+		if (cl->state)
+			return;
+	}
+
+	Cvar_ForceSet("g_idle", "1");
+}
+
 // MH: minimize memory usage when the server is empty
 static void SV_MinimizeMemory (void)
 {
@@ -3397,6 +3199,8 @@ SV_Frame
 */
 void SV_Frame (int msec)
 {
+	static int was_idle; // MH: ignore msec when coming out of idle mode
+
 #ifndef DEDICATED_ONLY
 	time_before_game = time_after_game = 0;
 #endif
@@ -3420,7 +3224,16 @@ void SV_Frame (int msec)
 		return;
 	}
 
-    svs.realtime += msec;
+	// MH: ignore msec when coming out of idle mode
+	if (was_idle)
+		msec = 0;
+	was_idle = g_idle->intvalue;
+
+	// MH: time stops in idle mode
+	if (g_idle->intvalue)
+		svs.realtime = sv.time - 1;
+	else
+		svs.realtime += msec;
 
 	// keep the random time dependent
 	//rand ();
@@ -3443,7 +3256,7 @@ void SV_Frame (int msec)
 		if (sv.time - svs.realtime > (1000 / sv_fps->intvalue))
 #endif
 		{
-			if (sv_showclamp->intvalue)
+			if (sv_showclamp->intvalue && sv.framenum > 0) // MH: 1st frame is always clamped
 				Com_Printf ("sv lowclamp: %u - %d = %d\n", LOG_SERVER, sv.time, svs.realtime, sv.time - svs.realtime);
 #if KINGPIN
 			svs.realtime = sv.time - 100;
@@ -3465,14 +3278,18 @@ void SV_Frame (int msec)
 				return;
 		}
 
+		// MH: do heartbeats now in idle mode because they won't be done below
+		if (g_idle->intvalue)
+			Master_Heartbeat ();
+
 #ifdef _WIN32
 		// MH: release mutex before sleeping
 		Sys_ReleaseConsoleMutex();
 #endif
 
-		// MH: wait up to 1000ms when in idle mode for reduced CPU usage
+		// MH: sleep until next heartbeat in idle mode
 		if (g_idle->intvalue)
-			NET_Sleep (sv.time - svs.realtime + 900);
+			NET_Sleep (public_server->intvalue ? svs.last_heartbeat + HEARTBEAT_SECONDS*1000 - curtime : INT_MAX);
 		else
 			NET_Sleep (sv.time - svs.realtime);
 
@@ -3484,22 +3301,20 @@ void SV_Frame (int msec)
 		return;
 	}
 
-	// MH: measure frame timing quality
-	if (!g_idle->intvalue && sv.framenum >= 10)
+	// MH: measure frame delay
+	if (sv.framenum > 0)
 	{
-		int d = ((svs.realtime - sv.time) << 1) - 1;
-		if (d < 0)
-			d = 0;
-		if (d > 100)
-			d = 100;
-		if (d > svs.timing)
-			svs.timing += (d - svs.timing) * 0.15f;
-		else
-		{
-			svs.timing += (d - svs.timing) * 0.003f;
-			if (svs.timing < 0.1)
-				svs.timing = 0;
-		}
+		int d = svs.realtime - sv.time;
+#if KINGPIN
+		int i = (sv.framenum / 10) % 30;
+		if (!(sv.framenum % 10))
+#else
+		int i = (sv.framenum / sv_fps->intvalue) % 30;
+		if (!(sv.framenum % sv_fps->intvalue))
+#endif
+			sv.frame_delays[i] = 0;
+		if (sv.frame_delays[i] < d)
+			sv.frame_delays[i] = d;
 	}
 
 #if !KINGPIN
@@ -3516,6 +3331,9 @@ void SV_Frame (int msec)
 	//may have executed some kind of quit
 	if (!svs.initialized)
 		return;
+
+	// update ping based on the last known frame from all clients
+	SV_CalcPings();
 
 	// give the clients some timeslices
 	SV_GiveMsec ();
@@ -3538,9 +3356,8 @@ void SV_Frame (int msec)
 	// clear teleport flags, etc for next frame
 	SV_PrepWorldFrame ();
 
-#ifdef ANTICHEAT
-	SV_AntiCheat_Run ();
-#endif
+	// MH: check auto-idle mode
+	SV_CheckAutoIdle ();
 
 	// MH: minimize memory usage
 	SV_MinimizeMemory ();
@@ -3581,8 +3398,7 @@ static void Master_Shutdown (void)
 	for (i=0 ; i<MAX_MASTERS ; i++)
 		if (master_adr[i].port)
 		{
-			if (i > 0)
-				Com_Printf ("Sending shutdown to %s\n", LOG_SERVER|LOG_NOTICE, NET_AdrToString (&master_adr[i]));
+			Com_Printf ("Sending shutdown to %s\n", LOG_SERVER|LOG_NOTICE, NET_AdrToString (&master_adr[i]));
 			Netchan_OutOfBandPrint (NS_SERVER, &master_adr[i], "shutdown");
 		}
 }
@@ -3782,39 +3598,53 @@ static void _rcon_buffsize_changed (cvar_t *var, char *oldvalue, char *newvalue)
 	}
 }
 
-#ifdef ANTICHEAT
-
-static void _expand_cvar_newlines (cvar_t *var, char *o, char *n)
-{
-	ExpandNewLines (n);
-}
-
-#endif
-
 // MH: check that idle mode can be enabled
 static void _g_idle_changed (cvar_t *var, char *oldvalue, char *newvalue)
 {
 	if (var->intvalue)
 	{
-		int i;
-		client_t *cl;
-
-		if (!dedicated->intvalue)
+		// idle mode is only allowed on an empty server
+		if (SV_CountPlayers())
 		{
-			// idle mode is only available on a dedicated server
+			if (sv_gamedebug->intvalue)
+				Com_Printf ("GAME WARNING: Attempt to activate g_idle while server is not empty.\n", LOG_SERVER|LOG_WARNING|LOG_GAMEDEBUG);
+			if (sv_gamedebug->intvalue > 1)
+				Sys_DebugBreak ();
+
 			Cvar_ForceSet (var->name, "0");
-			return;
 		}
-
-		for (i=0,cl=svs.clients; i < maxclients->intvalue; i++,cl++)
+		else
 		{
-			if (cl->state >= cs_connected)
-			{
-				// disable idle mode if there are players
-				Cvar_ForceSet (var->name, "0");
-				return;
-			}
+			// make any zombies timeout immediately
+			int		i;
+			client_t	*cl;
+			for (i=0, cl=svs.clients; i<maxclients->intvalue; i++, cl++)
+				cl->lastmessage = 0;
+
+			Com_Printf("Entering idle mode\n", LOG_SERVER|LOG_NOTICE);
 		}
+	}
+}
+
+// MH: open GeoIP database
+static void _geoipdb_changed (cvar_t *var, char *oldvalue, char *newvalue)
+{
+	if (mmdb.filename)
+		MMDB_close(&mmdb);
+	if (newvalue[0] && ((g_features->intvalue & GMF_WANT_COUNTRY) || sv_show_connections->intvalue))
+	{
+		int status = MMDB_open(newvalue, MMDB_MODE_MMAP, &mmdb);
+		if (!status)
+		{
+			// get the entire database into memory to avoid lookup delays
+			volatile int c;
+			int a;
+			for (c = a = 0; a < mmdb.file_size; a += 4096)
+				c += mmdb.file_content[a];
+			Com_Printf("GeoIP database loaded\n", LOG_SERVER|LOG_NOTICE, c);
+		}
+		else
+			Com_Printf("GeoIP database failed to load (%d)\n", LOG_SERVER|LOG_WARNING, status);
 	}
 }
 
@@ -3921,7 +3751,7 @@ void SV_Init (void)
 
 	public_server = Cvar_Get ("public", "1", 0);
 #if KINGPIN
-	public_server->help = "Send information about this server to master servers, which will cause the server to be shown in server browsers. See also 'setmaster' command. Default 1.\n0: Disabled\n1: Enable standard heartbeats\n2: Enable Gamespy heartbeats\n3: Enable both heartbeats\n";
+	public_server->help = "Send information about this server to master servers, which will cause the server to be shown in server browsers. See also 'setmaster' command. Default 1.\n0: Disabled\n1: Auto-enable both heartbeats\n2: Enable Gamespy heartbeats\n3: Enable Quake2 heartbeats\n";
 #else
 	public_server->help = "If set, sends information about this server to master servers which will cause the server to be shown in server browsers. See also 'setmaster' command. Default 1.\n";
 #endif
@@ -3930,11 +3760,6 @@ void SV_Init (void)
 	//sv_reconnect_limit = Cvar_Get ("sv_reconnect_limit", "3", CVAR_ARCHIVE);
 
 	SZ_Init (&net_message, net_message_buffer, sizeof(net_message_buffer));
-
-	//r1: init pyroadmin support
-#ifdef USE_PYROADMIN
-	pyroadminport = Cvar_Get ("pyroadminport", "0", CVAR_NOSET);
-#endif
 
 	//r1: lock server (prevent new connections)
 	sv_locked = Cvar_Get ("sv_locked", "0", 0);
@@ -3999,7 +3824,7 @@ void SV_Init (void)
 
 	//r1: nocheat visibility check support (cpu intensive -- warning)
 	sv_nc_visibilitycheck = Cvar_Get ("sv_nc_visibilitycheck", "0", 0);
-	sv_nc_visibilitycheck->help = "Attempt to calculate player visibility server-side to thwart wall-hacks and other cheats. CPU intensive. Default 0.\n";
+	sv_nc_visibilitycheck->help = "Attempt to calculate player visibility server-side to thwart wall-hacks and other cheats. Default 0.\n";
 
 	sv_nc_clientsonly = Cvar_Get ("sv_nc_clientsonly", "1", 0);
 	sv_nc_clientsonly->help = "Only apply sv_nc_visibilitycheck checking to other players. Default 1.\n";
@@ -4072,8 +3897,8 @@ void SV_Init (void)
 	sv_recycle->help = "Reload the Game DLL on the next map load. Default 0.\n"; // MH: removed "For mod developers only"
 
 	//r1: track server uptime in serverinfo?
-	sv_uptime = Cvar_Get ("sv_uptime", "0", 0);
-	sv_uptime->help = "Display the server uptime statistics in the info response shown to server browsers. Default 0.\n";
+	sv_uptime = Cvar_Get ("sv_uptime", "1", 0); // MH: changed default from 0 to 1
+	sv_uptime->help = "Display the server uptime statistics in the info response shown to server browsers. Default 1.\n";
 
 #if !KINGPIN
 	//r1: allow strafe jumping at high fps values (Requires hacked client (!!!))
@@ -4121,6 +3946,12 @@ void SV_Init (void)
 
 	sv_mapdownload_ok_message = Cvar_Get ("sv_mapdownload_ok_message", "", 0);
 	sv_mapdownload_ok_message->help = "Message to send to clients when they commence a map download. Default empty.\n";
+
+#if KINGPIN
+	// MH:
+	sv_pakdownload_message = Cvar_Get ("sv_pakdownload_message", "", 0);
+	sv_pakdownload_message->help = "Message to send to clients when they commence a PAK download. Default empty.\n";
+#endif
 
 #if !KINGPIN
 	//r1: failsafe against buggy traces
@@ -4271,12 +4102,6 @@ void SV_Init (void)
 #endif
 
 #if !KINGPIN
-	sv_cheaternet = Cvar_Get ("sv_cheaternet", "60", 0);
-	sv_cheaternet->help = "Lookup connecting players in the CheaterNet database and if an infraction was round less than <value> minutes ago, perform sv_cheaternet_action. See the server admin guide for more details. Default 60.\n";
-
-	sv_cheaternet_action = Cvar_Get ("sv_cheaternet_action", "1", 0);
-	sv_cheaternet_action->help = "Action to perform on a positive CheaterNet match. Default 1.\n0: Show details in server console only\n1: Show details to players.\n2: Refuse connection.\n";
-
 	sv_disallow_download_sprites_hack = Cvar_Get ("sv_disallow_download_sprites_hack", "1", 0);
 	sv_disallow_download_sprites_hack->help = "Disallow downloads of sprites (.sp2) to protocol 34 clients. 3.20 and other clients do not fetch linked skins on sprites, which may cause a crash when trying to render them with missing skins. Default 1.\n";
 
@@ -4294,9 +4119,9 @@ void SV_Init (void)
 #endif
 
 #if KINGPIN
-	sv_features = Cvar_Get ("sv_features", va("%d", GMF_CLIENTPOV | GMF_WANT_ALL_DISCONNECTS | GMF_CLIENTTEAM | GMF_CLIENTNOENTS), CVAR_NOSET);
+	sv_features = Cvar_Get ("sv_features", va("%d", GMF_CLIENTPOV | GMF_WANT_ALL_DISCONNECTS | GMF_CLIENTTEAM | GMF_CLIENTNOENTS | GMF_WANT_COUNTRY), CVAR_NOSET);
 #else
-	sv_features = Cvar_Get ("sv_features", va("%d", GMF_CLIENTNUM | GMF_WANT_ALL_DISCONNECTS | GMF_PROPERINUSE), CVAR_NOSET);
+	sv_features = Cvar_Get ("sv_features", va("%d", GMF_CLIENTNUM | GMF_WANT_ALL_DISCONNECTS | GMF_PROPERINUSE | GMF_WANT_COUNTRY), CVAR_NOSET);
 #endif
 	sv_features->help = "Read-only bitmask of extended server features for the Game DLL. Do not modify.\n";
 
@@ -4307,17 +4132,22 @@ void SV_Init (void)
 	sv_no_zoom = Cvar_Get ("sv_no_zoom", "0", 0);
 	sv_no_zoom->help = "Disable zooming-in by setting fov below 90. Default 0.\n";
 
-	// MH: idle mode that uses up to 1000ms frames for reduced CPU usage (only when a dedicated server is empty)
+	// MH: idle mode that suspends the game when a server is empty for minimal CPU usage
 	g_idle = Cvar_Get ("g_idle", "0", CVAR_NOSET);
 	g_idle->changed = _g_idle_changed;
 
 	// MH: automatically enable idle mode when the server is empty
 	sv_autoidle = Cvar_Get ("sv_autoidle", "0", 0);
-	sv_autoidle->help = "Automatically enable idle mode when the server is empty. Default 0.\n";
+	sv_autoidle->help = "Suspend the game when the server is empty. Default 0.\n";
 
 	// MH: minimize memory usage option
 	sv_minimize_memory = Cvar_Get ("sv_minimize_memory", "0", 0);
 	sv_minimize_memory->help = "Minimize memory usage when the server is empty. Default 0.\n";
+
+	// MH: GeoIP database
+	sv_geoipdb = Cvar_Get ("sv_geoipdb", Sys_FileLength("GeoLite2-Country.mmdb") > 0 ? "GeoLite2-Country.mmdb" : "", 0);
+	sv_geoipdb->changed = _geoipdb_changed;
+	sv_geoipdb->help = "The MaxMind GeoIP2 database to use for player country lookups. The database can be downloaded from http://dev.maxmind.com/geoip/geoip2/geolite2/. Default \"GeoLite2-Country.mmdb\" if it exists, otherwise empty (disabled).\n";
 
 #if KINGPIN
 	// MH: allow models that are not on the server
@@ -4339,85 +4169,10 @@ void SV_Init (void)
 	// MH: upstream bandwidth available
 	sv_bandwidth = Cvar_Get ("sv_bandwidth", "0", 0);
 	sv_bandwidth->help = "The upstream bandwidth available in KB/s. This determines how fast downloads can be. Default 0 (no limit).\n";
-#endif
 
-#ifdef ANTICHEAT
-	sv_require_anticheat = Cvar_Get ("sv_anticheat_required", "0", CVAR_LATCH);
-	sv_require_anticheat->help = "Require use of the r1ch.net anticheat module by players. Default 0.\n0: Don't require any anticheat module.\n1: Optionally use the anticheat module.\n2: Require the anticheat module.\n";
-
-	sv_anticheat_server_address = Cvar_Get ("sv_anticheat_server_address", "anticheat.r1ch.net", CVAR_LATCH);
-	sv_anticheat_server_address->help = "Address of the r1ch.net anticheat server. To avoid server stalls due to DNS lookup, you may wish to replace this with the current server IP. Default anticheat.r1ch.net.\n";
-
-	sv_anticheat_error_action = Cvar_Get ("sv_anticheat_error_action", "0", 0);
-	sv_anticheat_error_action->help = "Action to take if the anticheat server is unavailable. Default 0.\n0: Allow new clients to connect with no cheat protection\n1: Don't allow new clients until the connection is re-established.\n";
-
-	sv_anticheat_message = Cvar_Get ("sv_anticheat_message", "This server requires the r1ch.net anticheat module. Please see http://antiche.at/ for more details.", 0);
-	sv_anticheat_message->help = "Message to show to players who connect with no anticheat loaded. Use \\n for newline.\n";
-	sv_anticheat_message->changed = _expand_cvar_newlines;
-	ExpandNewLines (sv_anticheat_message->string);
-
-	sv_anticheat_badfile_action = Cvar_Get ("sv_anticheat_badfile_action", "0", 0);
-	sv_anticheat_badfile_action->help = "Action to take on a bad file loaded by a client. Default 0.\n0: Kick client.\n1: Notify client only.\n2: Notify all players.\n";
-
-	sv_anticheat_badfile_message = Cvar_Get ("sv_anticheat_badfile_message", "", 0);
-	sv_anticheat_badfile_message->help = "Message to show to clients that fail file tests, useful to include a URL to your server files / rules or something. Use \\n for newline. Default empty.\n";
-	sv_anticheat_badfile_message->changed = _expand_cvar_newlines;
-	ExpandNewLines (sv_anticheat_badfile_message->string);
-
-	sv_anticheat_badfile_max = Cvar_Get ("sv_anticheat_badfile_max", "0", 0);
-	sv_anticheat_badfile_max->help = "Maximum number of bad files before a client will be kicked, regardless of sv_anticheat_badfile_action value. 0 = disabled. Default 0.\n";
-
-	sv_anticheat_nag_time = Cvar_Get ("sv_anticheat_nag_time", "0", 0);
-	sv_anticheat_nag_time->help = "Seconds to show the sv_anticheat_nag_message. Default 0.\n";
-
-	sv_anticheat_nag_message = Cvar_Get ("sv_anticheat_nag_message", "Please use anticheat on this server.\nSee http://antiche.at/ for downloads.", 0);
-	sv_anticheat_nag_message->help = "Message to show to clients on joining the game if they are not using anticheat. \\n supported. Maximum of 40 characters per line.\n";
-	sv_anticheat_nag_message->changed = _expand_cvar_newlines;
-	ExpandNewLines (sv_anticheat_nag_message->string);
-
-	sv_anticheat_nag_defer = Cvar_Get ("sv_anticheat_nag_defer", "0", 0);
-	sv_anticheat_nag_defer->help = "Delay the anticheat nag message for this many seconds after the player connects. Default 0.\n";
-
-	sv_anticheat_show_violation_reason = Cvar_Get ("sv_anticheat_show_violation_reason", "0", 0);
-	sv_anticheat_show_violation_reason->help = "Include the type of cheat detected when showing a client violation to other players. Default 0.\n";
-
-	sv_anticheat_client_disconnect_action = Cvar_Get ("sv_anticheat_client_disconnect_action", "0", 0);
-	sv_anticheat_client_disconnect_action->help = "Action to take when a client disconnects from the anticheat server mid-game. Default 0.\n0: Mark client as invalid.\n1: Kick client.\n";
-
-	sv_anticheat_forced_disconnect_action = Cvar_Get ("sv_anticheat_forced_disconnect_action", "0", 0);
-	sv_anticheat_forced_disconnect_action->help = "Action to take when a forced anticheat client disconnects from the anticheat server mid-game. Default 0.\n0: Mark client as invalid.\n1: Kick client.\n";
-
-	sv_anticheat_disable_play = Cvar_Get ("sv_anticheat_disable_play", "0", 0);
-	sv_anticheat_disable_play->help = "Disable the use of the 'play' command if a player is using anticheat. default 0.\n";
-	sv_anticheat_disable_play->changed = SV_AntiCheat_UpdatePrefs;
-
-	sv_anticheat_client_restrictions = Cvar_Get ("sv_anticheat_client_restrictions", "0", 0);
-	sv_anticheat_client_restrictions->help = "Restrict the use of certain clients, even if they are anticheat valid. See the anticheat admin forum for further information. Default 0.\n";
-
-	sv_anticheat_force_protocol35 = Cvar_Get ("sv_anticheat_force_protocol35", "0", 0);
-	sv_anticheat_force_protocol35->help = "Force anticheat clients to connect using protocol 35. This may help prevent old hacks from working. Default 0.\n";
-#endif
-
-#if !KINGPIN
-	//server-private token to prevent spoofed cheaternet responses
-	do cheaternet_token = randomMT(); while (!cheaternet_token);
-#endif
-
-	//r1: init pyroadmin
-#ifdef USE_PYROADMIN
-	if (pyroadminport->intvalue)
-	{
-		char buff[128];
-		int len;
-
-		NET_StringToAdr ("127.0.0.1", &netaddress_pyroadmin);
-		netaddress_pyroadmin.port = ShortSwap((uint16)pyroadminport->intvalue);
-
-		pyroadminid = Sys_Milliseconds() & 0xFFFF;
-
-		len = Com_sprintf (buff, sizeof(buff), "hello %d", pyroadminid);
-		Netchan_OutOfBand (NS_SERVER, &netaddress_pyroadmin, len, (byte *)buff);
-	}
+	// MH: underwater sound
+	sv_underwater_sound = Cvar_Get ("sv_underwater_sound", "0", 0);
+	sv_underwater_sound->help = "Play an underwater sound to players that are under water. Default 0.\n";
 #endif
 }
 
@@ -4486,10 +4241,6 @@ void SV_Shutdown (char *finalmsg, qboolean reconnect, qboolean crashing)
 	if (!crashing || dbg_unload->intvalue)
 		SV_ShutdownGameProgs ();
 
-#ifdef ANTICHEAT
-	SV_AntiCheat_Disconnect ();
-#endif
-
 	// free current level
 	if (sv.demofile)
 		fclose (sv.demofile);
@@ -4525,4 +4276,8 @@ void SV_Shutdown (char *finalmsg, qboolean reconnect, qboolean crashing)
 	memset (&svs, 0, sizeof(svs));
 
 	MSG_Clear();
+
+	// MH: close GeoIP database
+	if (mmdb.filename)
+		MMDB_close(&mmdb);
 }

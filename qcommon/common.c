@@ -69,6 +69,9 @@ static cvar_t	*logfile_name;
 static cvar_t	*logfile_filterlevel = &uninitialized_cvar;
 static cvar_t	*con_filterlevel = &uninitialized_cvar;
 
+// MH: reopen the logfile
+qboolean	logfile_restart;
+
 #ifndef DEDICATED_ONLY
 cvar_t	*showtrace;
 #endif
@@ -208,9 +211,6 @@ tagmalloc_tag_t tagmalloc_tags[] =
 	{TAGMALLOC_CMDBANS, "CMDBANS", 0},
 	{TAGMALLOC_REDBLACK, "REDBLACK", 0},
 	{TAGMALLOC_LRCON, "LRCON", 0},
-#ifdef ANTICHEAT
-	{TAGMALLOC_ANTICHEAT, "ANTICHEAT", 0},
-#endif
 #if KINGPIN
 	{TAGMALLOC_DOWNLOAD_CACHE, "DOWNLOAD_CACHE", 0}, // MH: download cache entries
 #endif
@@ -321,6 +321,17 @@ void Com_Printf (const char *fmt, int level, ...)
 			if (p[0] < 32 && !isspace(p[0]))
 				p[0] = '-';
 			p++;
+		}
+
+		// MH: reopen the logfile
+		if (logfile_restart)
+		{
+			if (logfile)
+			{
+				fclose (logfile);
+				logfile = NULL;
+			}
+			logfile_restart = false;
 		}
 
 		if (!logfile)
@@ -499,18 +510,34 @@ void Com_Error (int code, const char *fmt, ...)
 #ifndef DEDICATED_ONLY
 		CL_Drop (code == ERR_NET, false);
 #endif
-		recursive = false;
 
 		//r1: auto-restart server code on game crash
-		if (state && (code == ERR_GAME || code == ERR_DROP))
+		if ((code == ERR_GAME || code == ERR_DROP))
 		{
 			const char *resmap;
 
 			resmap = Cvar_VariableString ("sv_restartmap");
+#if __linux__
+			if (!resmap[0])
+			{
+				// MH: terminate server if stdin is disabled
+				extern cvar_t *nostdin;
+				if (nostdin && nostdin->intvalue)
+					resmap = "*";
+			}
+#endif
 
 			if (resmap[0])
-				Cmd_ExecuteString (va ("map %s", resmap));
+			{
+				// MH: * = terminate server
+				if (!strcmp(resmap, "*"))
+					Cmd_ExecuteString("quit");
+				else
+					Cmd_ExecuteString(va("map %s", resmap));
+			}
 		}
+
+		recursive = false; // MH: don't reset recursive check until after map restart in case it fails too
 
 		longjmp (abortframe, -1);
 	}
@@ -3109,3 +3136,35 @@ void Z_CheckGameLeaks (void)
 	}
 }
 
+// MH: generate a string from a time duration
+char *TimeDurationString (double seconds, qboolean showseconds)
+{
+	static char string[64];
+	int days, hours, mins, secs, msecs;
+
+	secs = (int)seconds;
+	mins = secs / 60;
+	hours = mins / 60;
+	mins %= 60;
+	days = hours / 24;
+	hours %= 24;
+
+	string[0] = 0;
+	if (days)
+		sprintf(string, "%dd %dh %dm", days, hours, mins);
+	else if (hours)
+		sprintf(string, "%dh %dm", hours, mins);
+	else if (mins)
+		sprintf(string, "%dm", mins);
+	else 
+		showseconds = true;
+	if (showseconds)
+	{
+		if (string[0])
+			strcat(string, " ");
+		msecs = (seconds - secs) * 1000;
+		sprintf(string + strlen(string), msecs ? "%d.%03ds" : "%ds", secs % 60, msecs);
+	}
+
+	return string;
+}

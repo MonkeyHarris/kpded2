@@ -35,9 +35,9 @@ int		stringCmdCount;
 
 #include <sys/stat.h>
 #ifdef _WIN32
-#include <io.h>
-#define stat _stat
-#define fstat _fstat
+// MH: these functions are present in msvcrt.dll
+#define stat _stati64
+#define fstat _fstati64
 #endif
 
 download_t *downloads = NULL;
@@ -342,8 +342,8 @@ plainStrings:
 		{
 #if KINGPIN
 			int cs = start;
-			// MH: send downloadables, possibly in place of images
-			if (cs >= CS_IMAGES && cs < CS_IMAGES + MAX_IMAGES && (sv.dlconfigstrings[cs - CS_IMAGES][0] || sv.dlconfigstrings[cs - CS_IMAGES - 1][0]))
+			// MH: send downloadables in place of images
+			if (cs >= CS_IMAGES && cs < CS_IMAGES + MAX_IMAGES)
 				cs += MAX_CONFIGSTRINGS - CS_IMAGES;
 			if (sv.configstrings[cs][0])
 #else
@@ -773,9 +773,6 @@ static void SV_New_f (void)
 		MSG_BeginWriting (svc_stufftext);
 		MSG_WriteString ("cmd \177c version $version\n"
 		//as much as I hate to do it this way, wasting userinfo space is equally bad
-#ifdef ANTICHEAT
-		"cmd actoken $actoken\n"
-#endif
 		);
 		SV_AddMessage (sv_client, true);
 	}
@@ -1138,113 +1135,6 @@ void SV_ClientBegin (client_t *cl)
 		return;
 	}
 
-#ifdef ANTICHEAT
-	if (cl->anticheat_required != ANTICHEAT_EXEMPT)
-	{
-		///client is NOT EXEMPT
-		if (sv_require_anticheat->intvalue == 2 || cl->anticheat_required == ANTICHEAT_REQUIRED)
-		{
-			//anticheat is REQUIRED
-			if (!cl->anticheat_valid)
-			{
-				//client is INVALID
-				if (!SV_AntiCheat_IsConnected())
-				{
-					//acserver is DOWN
-					if (sv_anticheat_error_action->intvalue == 1)
-					{
-						//anticheat server connection is DOWN, client is INVALID, anticheat is REQUIRED, error action is DENY.
-						Com_Printf ("ANTICHEAT: Rejected connecting client %s[%s], no anticheat response (no anticheat server).\n", LOG_SERVER|LOG_ANTICHEAT, cl->name, NET_AdrToString (&cl->netchan.remote_address));
-						SV_ClientPrintf (cl, PRINT_HIGH, "This server is unable to take new connections right now. Please try again later.\n");
-						SV_DropClient (cl, true);
-						return;
-					}
-				}
-				else
-				{
-					if (cl->anticheat_query_sent == ANTICHEAT_QUERY_UNSENT)
-					{
-						//anticheat connection is UP, client is INVALID, anticheat is REQUIRED
-						SV_AntiCheat_QueryClient (cl);
-						return;
-					}
-
-					//anticheat connection is UP, client is STILL INVALID AFTER QUERY, anticheat is REQUIRED
-					Com_Printf ("ANTICHEAT: Rejected connecting client %s[%s], no anticheat response.\n", LOG_SERVER|LOG_ANTICHEAT, cl->name, NET_AdrToString (&cl->netchan.remote_address));
-					SV_ClientPrintf (cl, PRINT_HIGH, "%s\n", sv_anticheat_message->string);
-					SV_DropClient (cl, true);
-					return;
-				}
-			}
-			else
-			{
-				//client IS valid
-				int	match;
-
-				//check banned ac clients
-				match = (int)pow(2, cl->anticheat_client_type-1);
-				if (sv_anticheat_client_restrictions->intvalue & match)
-				{
-					Com_Printf ("ANTICHEAT: Rejected connecting client %s[%s], using restricted client\n", LOG_SERVER|LOG_ANTICHEAT, cl->name, NET_AdrToString (&cl->netchan.remote_address));
-					SV_ClientPrintf (cl, PRINT_HIGH, "Your Quake II client is not permitted on this server.\n");
-					SV_DropClient (cl, true);
-					return;
-				}
-
-				//check protocol version
-				if (sv_anticheat_force_protocol35->intvalue)
-				{
-					if (cl->protocol != PROTOCOL_R1Q2)
-					{
-						Com_Printf ("ANTICHEAT: Rejected connecting client %s[%s], using protocol 34.\n", LOG_SERVER|LOG_ANTICHEAT, cl->name, NET_AdrToString (&cl->netchan.remote_address));
-
-						SV_ClientPrintf (cl, PRINT_CHAT, "You must use protocol 35 on this server. You are being reconnected with protocol 35 enabled.\n");
-
-						MSG_WriteByte (svc_stufftext);
-						MSG_WriteString ("set cl_protocol \"35\"\nreconnect\n");
-						SV_AddMessage (cl, true);
-						SV_DropClient (cl, true);
-						return;
-					}
-				}
-			}
-		}
-		else if (sv_require_anticheat->intvalue == 1)
-		{
-			//anticheat is OPTIONAL
-			if (!cl->anticheat_valid)
-			{
-				//client is INVALID
-				if (cl->anticheat_query_sent == ANTICHEAT_QUERY_UNSENT && SV_AntiCheat_IsConnected())
-				{
-					//client is INVALID, query is UNSENT, anticheat is OPTIONAL
-					SV_AntiCheat_QueryClient (cl);
-					return;
-				}
-			}
-			else
-			{
-				//check protocol version
-				if (sv_anticheat_force_protocol35->intvalue)
-				{
-					if (cl->protocol != PROTOCOL_R1Q2)
-					{
-						Com_Printf ("ANTICHEAT: Rejected connecting client %s[%s], using protocol 34.\n", LOG_SERVER|LOG_ANTICHEAT, cl->name, NET_AdrToString (&cl->netchan.remote_address));
-
-						SV_ClientPrintf (cl, PRINT_CHAT, "You must use protocol 35 on this server. You are being reconnected with protocol 35 enabled.\n");
-
-						MSG_WriteByte (svc_stufftext);
-						MSG_WriteString ("set cl_protocol \"35\"\nreconnect\n");
-						SV_AddMessage (cl, true);
-						SV_DropClient (cl, true);
-						return;
-					}
-				}
-			}
-		}
-	}
-#endif
-
 	if (cl->spawncount != svs.spawncount )
 	{
 		Com_Printf ("SV_ClientBegin from %s for a different level\n", LOG_SERVER|LOG_NOTICE, cl->name);
@@ -1283,13 +1173,11 @@ void SV_ClientBegin (client_t *cl)
 #endif
 
 #if KINGPIN
-	// MH: send any images that were replaced with downloadables earlier
-	if (sv.dlconfigstrings[0][0])
+	// MH: send image configstrings now (downloadables were sent in their place earlier)
 	{
 		int i;
 		for (i=1; i<MAX_IMAGES; i++)
 		{
-			if (!sv.dlconfigstrings[i - 1][0]) break;
 			if (sv.configstrings[CS_IMAGES + i][0])
 			{
 				MSG_BeginWriting (svc_configstring);
@@ -1339,38 +1227,6 @@ void SV_ClientBegin (client_t *cl)
 
 	// call the game begin function
 	ge->ClientBegin (cl->edict);
-
-#ifdef ANTICHEAT
-	if (sv_require_anticheat->intvalue)
-	{
-		//r1: possibly kicked by game in clientbegin? check.
-		if (cl->state > cs_zombie)
-		{
-			if (cl->anticheat_valid)
-			{
-				if (cl->anticheat_file_failures)
-					SV_BroadcastPrintf (PRINT_MEDIUM, ANTICHEATMESSAGE " %s failed %d file check%s.\n", cl->name, cl->anticheat_file_failures, cl->anticheat_file_failures == 1 ? "" : "s");
-			}
-			else
-			{
-				if (cl->anticheat_required == ANTICHEAT_EXEMPT)
-					SV_BroadcastPrintf (PRINT_MEDIUM, ANTICHEATMESSAGE " %s is exempt from using anticheat.\n", cl->name);
-				else
-					SV_BroadcastPrintf (PRINT_MEDIUM, ANTICHEATMESSAGE " %s is not using anticheat.\n", cl->name);
-			}
-		}
-	}
-#endif
-
-#if !KINGPIN
-	if (cl->cheaternet_message)
-	{
-		if (cl->state > cs_zombie)
-			SV_BroadcastPrintf (PRINT_HIGH, "%s", cl->cheaternet_message);
-		Z_Free (cl->cheaternet_message);
-		cl->cheaternet_message = NULL;
-	}
-#endif
 
 	//give them some movement
 
@@ -2320,6 +2176,25 @@ invalid:
 			SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", sv_mapdownload_ok_message->string);
 	}
 
+#if KINGPIN
+	// MH: show PAK download message if there is one
+	if (ispak && !sv_client->downloadpak)
+	{
+		if (sv_pakdownload_message->modified)
+		{
+			ExpandNewLines (sv_pakdownload_message->string);
+			if (strlen (sv_pakdownload_message->string) >= MAX_USABLEMSG-16)
+			{
+				Com_Printf ("WARNING: sv_pakdownload_message string is too long!\n", LOG_SERVER|LOG_WARNING);
+				Cvar_Set ("sv_pakdownload_message", "");
+			}
+			sv_pakdownload_message->modified = false;
+		}
+		if (sv_pakdownload_message->string[0])
+			SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", sv_pakdownload_message->string);
+	}
+#endif
+
 #if !KINGPIN
 	//r1: r1q2 zlib udp downloads?
 #ifndef NO_ZLIB
@@ -2404,139 +2279,6 @@ void SV_CloseDownload(client_t *cl)
 	}
 #endif
 }
-
-#ifdef ANTICHEAT
-static void SV_ACList_f (void)
-{
-	client_t	*cl;
-	const char	*substring;
-
-	if (sv_require_anticheat->intvalue)
-	{
-		substring = Cmd_Argv (1);
-
-		SV_ClientPrintf (sv_client, PRINT_HIGH, 
-			"+----------------+--------+-----+------+\n"
-			"|  Player Name   |AC Valid|Files|Client|\n"
-			"+----------------+--------+-----+------+\n");
-
-		for (cl = svs.clients; cl < svs.clients + maxclients->intvalue; cl++)
-		{
-			if (cl->state < cs_spawned)
-				continue;
-
-			if (!substring[0] || strstr (cl->name, substring))
-			{
-				if (cl->anticheat_valid)
-				{
-					int	index;
-					index = cl->anticheat_client_type;
-					if (index >= 6)
-						index = 0;
-					SV_ClientPrintf (sv_client, PRINT_HIGH, "|%-16s|%s| %3d |%-6s|\n",
-						cl->name, "   yes  ", cl->anticheat_file_failures, anticheat_client_names[index]);
-				}
-				else
-				{
-					SV_ClientPrintf (sv_client, PRINT_HIGH, "|%-16s|%s| N/A | N/A  |\n",
-						cl->name, cl->anticheat_required == ANTICHEAT_EXEMPT ? " exempt " : "   NO   ");
-				}
-			}
-		}
-
-		SV_ClientPrintf (sv_client, PRINT_HIGH, 
-			"+----------------+--------+-----+------+\n");
-
-		if (SV_AntiCheat_IsConnected())
-			SV_ClientPrintf (sv_client, PRINT_HIGH, "File check list in use: %s\n", antiCheatNumFileHashes ? anticheat_hashlist_name : "none");
-
-		SV_ClientPrintf (sv_client, PRINT_HIGH, "This Quake II server is %sconnected to the anticheat server.\nFor information on anticheat, please visit http://antiche.at/\n", SV_AntiCheat_IsConnected () ? "" : "NOT ");
-	}
-	else
-		SV_ClientPrintf (sv_client, PRINT_HIGH, "The anticheat module is not in use on this server.\nFor information on anticheat, please visit http://antiche.at/\n");
-}
-
-static void SV_ACInfo_f (void)
-{
-	ptrdiff_t			clientID;
-	const char			*substring;
-	const char			*filesubstring;
-	client_t			*cl;
-	linkednamelist_t	*bad;
-
-	if (!sv_require_anticheat->intvalue)
-	{
-		SV_ClientPrintf (sv_client, PRINT_HIGH, "The anticheat module is not in use on this server.\nFor information on anticheat, please visit http://antiche.at/\n");
-		return;
-	}
-
-	if (Cmd_Argc() == 1)
-	{
-		cl = sv_client;
-		filesubstring = "";
-	}
-	else
-	{
-		substring = Cmd_Argv (1);
-		filesubstring = Cmd_Argv (2);
-
-		clientID = -1;
-
-		if (StringIsNumeric (substring))
-		{
-			clientID = atoi (substring);
-			if (clientID >= maxclients->intvalue || clientID < 0)
-			{
-				SV_ClientPrintf (sv_client, PRINT_HIGH, "Invalid client ID.\n");
-				return;
-			}
-		}
-		else
-		{
-			for (cl = svs.clients; cl < svs.clients + maxclients->intvalue; cl++)
-			{
-				if (cl->state < cs_spawned)
-					continue;
-
-				if (strstr (cl->name, substring))
-				{
-					clientID = cl - svs.clients;
-					break;
-				}
-			}
-		}
-
-		if (clientID == -1)
-		{
-			SV_ClientPrintf (sv_client, PRINT_HIGH, "Player not found.\n");
-			return;
-		}
-
-		cl = &svs.clients[clientID];
-		if (cl->state < cs_spawned)
-		{
-			SV_ClientPrintf (sv_client, PRINT_HIGH, "Player is not active.\n");
-			return;
-		}
-	}
-
-	if (!cl->anticheat_valid)
-	{
-		SV_ClientPrintf (sv_client, PRINT_HIGH, "%s is not using anticheat.\n", cl->name);
-		return;
-	}
-
-	bad = &cl->anticheat_bad_files;
-
-	SV_ClientPrintf (sv_client, PRINT_HIGH, "File check failures for %s:\n", cl->name);
-	while (bad->next)
-	{
-		bad = bad->next;
-		if (!filesubstring[0] || strstr (bad->name, filesubstring))
-			SV_ClientPrintf (sv_client, PRINT_HIGH, "%s\n", bad->name);
-	}
-}
-#endif
 //============================================================================
 
 
@@ -2979,6 +2721,7 @@ static void SV_Lag_f (void)
 	const char	*substring;
 	int			avg_ping, min_ping, max_ping, count, j;
 	float		ccq;
+	int			cdelay, cdelaytime, sdelay, sdelay2, sdelaytime;
 
 	if (Cmd_Argc() == 1)
 	{
@@ -3047,26 +2790,62 @@ static void SV_Lag_f (void)
 	if (count)
 		avg_ping /= count;
 
+	// MH: get max client delay
+	cdelaytime = cdelay = 0;
+	for (j = 0; j < 20; j++)
+	{
+		int d = cl->cmd_delays[(cl->cmd_delayindex - j + 20) % 20];
+		if (cdelay < d)
+		{
+			cdelay = d;
+			cdelaytime = j;
+		}
+	}
+	if (cdelay)
+		cdelaytime += sv.time / 1000 - cl->cmd_delayindex;
+
+	// MH: get max server frame delay in last 3s and 30s
+	sdelaytime = sdelay2 = sdelay = 0;
+	for (j = 0; j < 30; j++)
+	{
+#if KINGPIN
+		int d = sv.frame_delays[(sv.framenum / 10 - j + 30) % 30];
+#else
+		int d = sv.frame_delays[(sv.framenum / sv_fps->intvalue - j + 30) % 30];
+#endif
+		if (sdelay < d)
+		{
+			sdelay = d;
+			sdelaytime = j;
+			if (j < 3)
+				sdelay2 = d;
+		}
+	}
+
 #if KINGPIN
 	ccq = 100 - cl->quality;
 #else
 	ccq = (50.0f * (2.0f - (cl->commandMsecOverflowCount > 2 ? 2 : cl->commandMsecOverflowCount)));
 #endif
 
-	// MH: include server timing quality (can cause lag if bad)
-	SV_ClientPrintf (sv_client, PRINT_HIGH, 
+	SV_ClientPrintf(sv_client, PRINT_HIGH,
 		"Recent lag stats for %s:\n"
-		"RTT (min/avg/max)   : %d ms / %d ms / %d ms\n"
-		"Latency stability   : %.0f%%\n"
-		"Server to Client PL : %.2f%%\n"
-		"Client to Server PL : %.2f%%\n"
-		"Server timing       : %d%%\n",
+		"Ping (min/avg/max)    : %d / %d / %d ms\n"
+		"Latency stability     : %.0f%%\n"
+		"Server to Client loss : %.2f%%\n"
+		"Client to Server loss : %.2f%%\n",
 		cl->name,
 		min_ping, avg_ping, max_ping,
 		ccq,
 		((float)cl->netchan.out_dropped / (float)cl->netchan.out_total) * 100,
-		((float)cl->netchan.in_dropped / (float)cl->netchan.in_total) * 100,
-		100 - (int)svs.timing);
+		((float)cl->netchan.in_dropped / (float)cl->netchan.in_total) * 100);
+	// MH: include client and server delay info
+	SV_ClientPrintf(sv_client, PRINT_HIGH,
+		cdelaytime >= 3 ? "Client delay (max)    : %d ms (%ds ago)\n" : "Client delay (max)    : %d ms\n",
+		cdelay, cdelaytime);
+	SV_ClientPrintf(sv_client, PRINT_HIGH,
+		sdelay > sdelay2 ? "Server delay (max)    : %d - %d ms (%ds ago)\n" : "Server delay (max)    : %d ms\n",
+		sdelay2, sdelay, sdelaytime);
 }
 
 static void SV_PacketDup_f (void)
@@ -3092,37 +2871,6 @@ static void SV_PacketDup_f (void)
 	SV_ClientPrintf (sv_client, PRINT_HIGH, "Duplicate packets now set to %d.\n", i);
 }
 
-#ifdef ANTICHEAT
-static void SV_ACToken_f (void)
-{
-	const char *token;
-
-	if (Cmd_Argc() != 2)
-		return;
-
-	token = SV_AntiCheat_CheckToken (Cmd_Argv(1));
-	if (token)
-	{
-		client_t *cl;
-		for (cl = svs.clients; cl < svs.clients + maxclients->intvalue; cl++)
-		{
-			if (cl->state <= cs_zombie)
-				continue;
-
-			//note, we only store pointer, actual string value is irrelevant
-			if (cl->anticheat_token == token)
-			{
-				SV_KickClient (cl, "duplicate anticheat token", "Your anticheat token was used by another player so you have been disconnected.");
-				continue;
-			}
-		}
-
-		Com_Printf ("ANTICHEAT: %s bypassed anticheat requirements with token '%s'\n", LOG_ANTICHEAT|LOG_SERVER, sv_client->name, token);
-		sv_client->anticheat_required = ANTICHEAT_EXEMPT;
-	}
-}
-#endif
-
 #if KINGPIN
 static void SV_Patched_f (void)
 {
@@ -3139,14 +2887,6 @@ static void SV_Patched_f (void)
 	}
 	Com_Printf ("SV_Patched_f unexpected from %s, assuming not patched\n", LOG_SERVER|LOG_NOTICE, sv_client->name);
 	sv_client->patched = 0;
-}
-
-// MH: open options menu even if scoreboard is showing when Esc key is pressed 
-static void SV_PutAway_f (void)
-{
-	MSG_BeginWriting (svc_stufftext);
-	MSG_WriteString ("menu_main\n");
-	SV_AddMessage (sv_client, true);
 }
 #endif
 
@@ -3184,23 +2924,12 @@ static ucmd_t ucmds[] =
 	{"lag", SV_Lag_f},
 	{"packetdup", SV_PacketDup_f},
 	
-
-#ifdef ANTICHEAT
-	{"aclist", SV_ACList_f},
-	{"acinfo", SV_ACInfo_f},
-	{"actoken", SV_ACToken_f},
-#endif
-
 	{"download", SV_BeginDownload_f},
 #if KINGPIN
 	{"download5", SV_BeginDownload_f},
 	{"nextdl2", SV_NextPushDownload_f},
 #else
 	{"nextdl", SV_NextDownload_f},
-#endif
-
-#if KINGPIN
-	{"putaway", SV_PutAway_f},
 #endif
 
 	{NULL, NULL}
@@ -3366,6 +3095,15 @@ static void SV_ExecuteUserCommand (char *s)
 #if KINGPIN
 	if (!strcmp(Cmd_Argv(0), "-activate"))
 		return;
+
+	// MH: open options menu even if scoreboard is showing when Esc key is pressed (unless disabled by game)
+	if (!strcmp(Cmd_Argv(0), "putaway") && !(sv_client->edict->client->ps.stats[STAT_LAYOUTS] & 6))
+	{
+		MSG_BeginWriting (svc_stufftext);
+		MSG_WriteString ("menu_main\n");
+		SV_AddMessage (sv_client, true);
+		return;
+	}
 #endif
 
 	//r1: say parser (ick)
@@ -3454,6 +3192,17 @@ static void SV_ExecuteUserCommand (char *s)
 		//since stuff like q2admin spams tons of stuffcmds all the time...
 		sv_client->idletime = 0;
 	}
+
+#if KINGPIN
+	// MH: the " character can't be reliably used in chat commands, so the patch replaces them with 0x7e,
+	// which looks the same in game but not in logs, so put " back now
+	if (!strcmp (Cmd_Argv(0), "say") || !strcmp (Cmd_Argv(0), "say_team"))
+	{
+		char	*p = Cmd_Args();
+		while ((p = strchr (p, 0x7e)))
+			p[0] = '\"';
+	}
+#endif
 
 	for (y = nullcmds.next; y; y = y->next)
 	{
@@ -3699,7 +3448,7 @@ void SV_RunMultiMoves (client_t *cl)
 //#endif
 #endif
 
-// MH: per-client version of SV_CalcPings (which is no longer used)
+// MH: per-client version of SV_CalcPings
 static void SV_CalcPing (client_t *cl)
 {
 	int			j;
@@ -3893,19 +3642,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 				break;
 			}
 
-			//r1: reset idle time on activity
-			if (newcmd.buttons != oldcmd.buttons ||
-				newcmd.forwardmove != oldcmd.forwardmove ||
-				newcmd.upmove != oldcmd.upmove)
-				cl->idletime = 0;
-
-			//flag to see if this is actually a player or what (used in givemsec)
-			cl->moved = true;
-
-			// MH: enable using acks to measure packet loss
-			cl->netchan.countacks = true;
-
-			// if the checksum fails, ignore the rest of the packet
+			// if the checksum fails, ignore the rest of the packet (MH: moved to before the stuff below)
 #if KINGPIN
 			calculatedChecksum = COM_BlockSequenceCheckByte (
 				net_message_buffer + checksumIndex + 1,
@@ -3936,6 +3673,55 @@ void SV_ExecuteClientMessage (client_t *cl)
 			}*/
 #endif
 
+#if KINGPIN
+			// MH: measure the connection's latency consistency (client->server)
+			if (cl->quality_last && cl->netchan.dropped < 3 && newcmd.msec < 200)
+			{
+				int d = curtime - cl->quality_last - newcmd.msec;
+				if (cl->netchan.dropped)
+				{
+					if (oldcmd.msec >= 200)
+						goto skipquality;
+					d -= oldcmd.msec;
+					if (cl->netchan.dropped > 1)
+					{
+						if (oldest.msec >= 200)
+							goto skipquality;
+						d -= oldest.msec;
+					}
+				}
+				cl->currentping += d;
+				if (d > 1)
+					cl->quality_acc += d;
+				else
+				{
+					if (cl->quality_acc)
+					{
+						d = cl->quality_acc;
+						cl->quality_acc = 0;
+					}
+					if (d >= -1)
+					{
+						d += (d >> 1) - 1;
+						if (d < 0)
+							d = 0;
+						if (d > 100)
+							d = 100;
+						if (d > cl->quality)
+							cl->quality += (d - cl->quality) * 0.075f;
+						else
+						{
+							cl->quality += (d - cl->quality) * 0.00004f * (newcmd.msec + oldcmd.msec + oldest.msec);
+							if (cl->quality < 0.1)
+								cl->quality = 0;
+						}
+					}
+				}
+			}
+skipquality:
+			cl->quality_last = curtime;
+#endif
+
 			// MH: latency checking moved from before to after checks above
 			if (lastframe != cl->lastframe)
 			{
@@ -3943,7 +3729,10 @@ void SV_ExecuteClientMessage (client_t *cl)
 
 				if (cl->lastframe > 0)
 				{
-					//FIXME: should we adjust for FPS latency?
+#if KINGPIN
+					// MH: retain current ping for more accurate antilag processing
+					cl->currentping =
+#endif
 					cl->frame_latency[cl->lastframe&(LATENCY_COUNTS-1)] = 
 						curtime - cl->frames[cl->lastframe & UPDATE_MASK].senttime; // MH: using wall clock (not server time)
 
@@ -3955,8 +3744,49 @@ void SV_ExecuteClientMessage (client_t *cl)
 				}
 			}
 
+			//r1: reset idle time on activity
+			if (newcmd.buttons != oldcmd.buttons ||
+				newcmd.forwardmove != oldcmd.forwardmove ||
+				newcmd.sidemove != oldcmd.sidemove || // MH: check sidemove too
+				newcmd.upmove != oldcmd.upmove)
+				cl->idletime = 0;
+
+			//flag to see if this is actually a player or what (used in givemsec)
+			cl->moved = true;
+
+			// MH: enable using acks to measure packet loss
+			cl->netchan.countacks = true;
+
+			// MH: measure client delays (when not idle)
+			if (newcmd.forwardmove|newcmd.sidemove|newcmd.upmove)
+			{
+				int d = newcmd.msec - (oldcmd.msec <= oldest.msec ? oldcmd.msec : oldest.msec);
+				int i = sv.time / 1000;
+				if ((unsigned)(i - cl->cmd_delayindex) >= 20)
+				{
+					memset(cl->cmd_delays, 0, sizeof(cl->cmd_delays));
+					cl->cmd_delayindex = i;
+				}
+				else
+				{
+					while (cl->cmd_delayindex != i)
+					{
+						cl->cmd_delayindex++;
+						cl->cmd_delays[cl->cmd_delayindex % 20] = 0;
+					}
+				}
+				if (cl->cmd_delays[i % 20] < d)
+					cl->cmd_delays[i % 20] = d;
+			}
+
 			if (!sv_paused->intvalue)
 			{
+#if KINGPIN
+				// MH: pass the current ping to the game dll for antilag processing
+				if (cl->currentping > 0)
+					cl->edict->client->ping = cl->currentping;
+#endif
+
 				net_drop = cl->netchan.dropped;
 
 				//r1: server configurable command backup limit
@@ -3966,7 +3796,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 				if (net_drop)
 				{
 #if KINGPIN
-					// MH: adjust ping for old commands (in case of anti-lag processing)
+					// MH: adjust ping for old commands (for antilag processing)
 					cl->edict->client->ping += newcmd.msec;
 					if (cl->netchan.dropped > 1)
 						cl->edict->client->ping += oldcmd.msec;
@@ -4016,6 +3846,11 @@ void SV_ExecuteClientMessage (client_t *cl)
 					}
 				}
 				SV_ClientThink (cl, &newcmd);
+
+#if KINGPIN
+				// MH: restore average ping
+				cl->edict->client->ping = cl->ping;
+#endif
 			}
 
 			cl->lastcmd = newcmd;

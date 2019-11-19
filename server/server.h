@@ -107,6 +107,9 @@ typedef struct
 #if KINGPIN
 	// MH: downloadable files
 	char		dlconfigstrings[MAX_IMAGES][MAX_QPATH];
+
+	// MH: standing in lava/slime sound index
+	int			snd_fry;
 #endif
 
 	//r1: pointer now (since each client now has their own set) - this avoids
@@ -121,6 +124,9 @@ typedef struct
 	// demo server information
 	FILE		*demofile;
 	uint32		randomframe;
+
+	// MH: recent frame delays
+	int			frame_delays[30];
 } server_t;
 
 //qboolean RateLimited (ratelimit_t *limit, int maxCount);
@@ -197,6 +203,7 @@ typedef struct client_s
 	int				ping;
 
 	int				message_size[RATE_MESSAGES];	// used to rate drop packets
+	int				message_total;		// MH: total of message_size
 	int				rate;
 	int				surpressCount;		// number of messages rate supressed
 
@@ -308,17 +315,8 @@ typedef struct client_s
 	int							timeSkewLastDiff;
 #endif
 
-#ifdef ANTICHEAT
-	qboolean					anticheat_valid;
-	int							anticheat_query_sent;
-	int							anticheat_required;
-	int							anticheat_file_failures;
-	linkednamelist_t			anticheat_bad_files;
-	unsigned					anticheat_query_time;
-	unsigned					anticheat_nag_time;
-	const char					*anticheat_token;
-	int							anticheat_client_type;
-#endif
+	// MH: dead r1ch.net anticheat stuff removed
+
 	int							spawncount;
 
 #if !KINGPIN
@@ -329,8 +327,6 @@ typedef struct client_s
 	pmovestatus_t				current_move;
 
 #if !KINGPIN
-	char						*cheaternet_message;
-
 	//ugly hack for variable FPS support dropping s.event
 	int							entity_events[MAX_EDICTS];
 #endif
@@ -346,9 +342,19 @@ typedef struct client_s
 #if KINGPIN
 	// MH: connection quality
 	float			quality;
+	unsigned		quality_last;
+	int				quality_acc;
+
+	// MH: ping for current usercmd
+	int				currentping;
+
+	// MH: recent usercmd delays
+	int				cmd_delays[20];
+	int				cmd_delayindex;
 #endif
 
 	// MH: demo recording
+	char			demoname[MAX_QPATH];
 	FILE			*demofile;
 	unsigned		demostart;
 } client_t;
@@ -424,9 +430,6 @@ typedef struct
 	sventity_t			entities[MAX_EDICTS];
 #endif
 
-	// MH: frame timing quality
-	float				timing;
-
 	int					game_features;
 } server_static_t;
 
@@ -436,8 +439,6 @@ extern	cvar_t	*sv_ratelimit_status;
 
 extern	netadr_t	net_from;
 extern	sizebuf_t	net_message;
-
-extern	netadr_t	cheaternet_adr;
 
 extern	netadr_t	master_adr[MAX_MASTERS];	// address of the master server
 
@@ -481,6 +482,9 @@ extern	cvar_t		*sv_allow_unconnected_cmds;
 
 extern	cvar_t		*sv_mapdownload_denied_message;
 extern	cvar_t		*sv_mapdownload_ok_message;
+#if KINGPIN
+extern	cvar_t		*sv_pakdownload_message;
+#endif
 
 #if !KINGPIN
 extern	cvar_t		*sv_new_entflags;
@@ -532,10 +536,6 @@ extern	cvar_t		*sv_interpolated_pmove;
 
 extern	cvar_t		*sv_global_master;
 
-#ifdef ANTICHEAT
-extern	cvar_t		*sv_require_anticheat;
-#endif
-
 extern	cvar_t	*allow_download;
 extern	cvar_t	*allow_download_players;
 extern	cvar_t	*allow_download_models;
@@ -559,6 +559,9 @@ extern cvar_t	*sv_no_zoom;
 // MH: minimize memory usage
 extern cvar_t	*sv_minimize_memory;
 
+// MH: GeoIP database
+extern cvar_t	*sv_geoipdb;
+
 #if KINGPIN
 // MH: compression level
 extern cvar_t	*sv_compress;
@@ -567,10 +570,13 @@ extern cvar_t	*sv_compress;
 extern cvar_t	*sv_compress_downloads;
 
 // MH: pre-cache downloads to the system file cache
-extern	cvar_t	*sv_download_precache;
+extern cvar_t	*sv_download_precache;
 
 // MH: upstream bandwidth available
-extern	cvar_t	*sv_bandwidth;
+extern cvar_t	*sv_bandwidth;
+
+// MH: underwater sound
+extern cvar_t	*sv_underwater_sound;
 #endif
 
 //===========================================================
@@ -625,7 +631,6 @@ extern cvar_t	*sv_packetentities_hack;
 
 extern cvar_t	*sv_optimize_deltas;
 
-extern cvar_t	*sv_cheaternet;
 extern cvar_t	*sv_disallow_download_sprites_hack;
 
 extern cvar_t	*sv_fps;
@@ -839,9 +844,6 @@ struct netblock_s
 #define	CVARBAN_EXEC		6
 
 extern blackhole_t blackholes;
-#ifdef ANTICHEAT
-extern netblock_t anticheat_exceptions;
-#endif
 
 typedef struct banmatch_s banmatch_t;
 
@@ -878,73 +880,7 @@ uint32 CalcMask (int32 bits);
 
 extern netblock_t	blackhole_exceptions;
 
-#ifdef ANTICHEAT
-void SV_AntiCheat_WaitForInitialConnect (void);
-void SV_AntiCheat_Disconnect (void);
-qboolean SV_AntiCheat_Connect (void);
-qboolean SV_AntiCheat_IsConnected (void);
-qboolean SV_AntiCheat_Disconnect_Client (client_t *cl);
-qboolean SV_AntiCheat_QueryClient (client_t *cl);
-void SV_AntiCheat_Run (void);
-qboolean SV_AntiCheat_Challenge (netadr_t *from, client_t *cl);
-const char *SV_AntiCheat_CheckToken (const char *token);
-void SV_AntiCheat_UpdatePrefs (cvar_t *v, char *oldVal, char *newVal);
-
-#define ANTICHEATMESSAGE "\220\xe1\xee\xf4\xe9\xe3\xe8\xe5\xe1\xf4\221"
-
-extern	cvar_t	*sv_anticheat_server_address;
-extern	cvar_t	*sv_anticheat_error_action;
-extern	cvar_t	*sv_anticheat_badfile_action;
-extern	cvar_t	*sv_anticheat_badfile_message;
-extern	cvar_t	*sv_anticheat_badfile_max;
-extern	cvar_t	*sv_anticheat_message;
-
-extern cvar_t	*sv_anticheat_nag_time;
-extern cvar_t	*sv_anticheat_nag_message;
-extern cvar_t	*sv_anticheat_nag_defer;
-
-extern cvar_t	*sv_anticheat_show_violation_reason;
-extern cvar_t	*sv_anticheat_client_disconnect_action;
-extern cvar_t	*sv_anticheat_forced_disconnect_action;
-extern cvar_t	*sv_anticheat_disable_play;
-extern cvar_t	*sv_anticheat_client_restrictions;
-extern cvar_t	*sv_anticheat_force_protocol35;
-
-extern	int		antiCheatNumFileHashes;
-
-void SVCmd_SVACList_f (void);
-void SVCmd_SVACInfo_f (void);
-void SVCmd_SVACUpdate_f (void);
-void SVCmd_SVACInvalidate_f (void);
-
-enum
-{
-	ANTICHEAT_NORMAL,
-	ANTICHEAT_REQUIRED,
-	ANTICHEAT_EXEMPT
-};
-
-enum
-{
-	ANTICHEAT_QUERY_UNSENT,
-	ANTICHEAT_QUERY_SENT,
-	ANTICHEAT_QUERY_DONE
-};
-
-#define ACCLIENT_R1Q2	0x01
-#define ACCLIENT_EGL	0x02
-#define	ACCLIENT_APRGL	0x04
-#define	ACCLIENT_APRSW	0x08
-#define	ACCLIENT_Q2PRO	0x10
-
-extern netblock_t	anticheat_exceptions;
-extern netblock_t	anticheat_requirements;
-
-extern char anticheat_hashlist_name[256];
-
-extern const char *anticheat_client_names[];
-
-#endif
+// MH: dead r1ch.net anticheat stuff removed
 
 void SV_ClientBegin (client_t *cl);
 void SV_SendPlayerUpdates (int msec_to_next_frame);
@@ -973,3 +909,6 @@ extern cvar_t	*g_features;
 // server is able to read noents field from gclient_s struct to send no entities to client
 #define GMF_CLIENTNOENTS	0x200
 #endif
+
+// MH: inform game DLL of client's country in ClientConnect userinfo
+#define GMF_WANT_COUNTRY	0x400

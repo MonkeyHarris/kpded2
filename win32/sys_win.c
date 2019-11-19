@@ -81,9 +81,6 @@ qboolean	Minimized;
 HWND		hwnd_Server;
 
 #ifndef NO_SERVER
-#ifdef USE_PYROADMIN
-extern netadr_t netaddress_pyroadmin;
-#endif
 static HANDLE		hinput, houtput;
 BOOL	oldStyleConsole = FALSE;
 
@@ -93,10 +90,6 @@ static int	console_textlen;
 
 uint32	sys_msg_time;
 uint32	sys_frame_time;
-
-#ifdef USE_PYROADMIN
-extern		cvar_t	*pyroadminport;
-#endif
 
 cvar_t		*win_disableexceptionhandler = &uninitialized_cvar;
 cvar_t		*win_silentexceptionhandler = &uninitialized_cvar;
@@ -130,6 +123,8 @@ char	bname[MAX_QPATH];
 
 // MH: custom console window title
 char	*win_title = NULL;
+
+void NET_InterruptSleep();
 
 /*
 ===============================================================================
@@ -552,6 +547,9 @@ void ServerWindowProcCommandExecute (void)
 	Sys_ReleaseConsoleMutex();
 
 	SendDlgItemMessage (hwnd_Server, IDC_COMMAND, WM_SETTEXT, 0, (LPARAM)"");
+
+	// MH: interrupt NET_Sleep to avoid delays
+	NET_InterruptSleep();
 }
 
 void Sys_UpdateConsoleBuffer (void)
@@ -699,7 +697,8 @@ LRESULT CALLBACK ServerWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 			return TRUE;
 		case WM_CLOSE:
 			{
-				if (SV_CountPlayers()) {
+				if (SV_CountPlayers())
+				{
 					int ays = MessageBox (hwnd_Server, "There are still players on the server! Really shut it down?", "WARNING!", MB_YESNO + MB_ICONEXCLAMATION);
 					if (ays == IDNO)
 						return TRUE;
@@ -911,6 +910,7 @@ void Sys_Init (void)
 #if CONSOLETHREAD
 			SZ_Init (&console_buffer, console_buff, sizeof(console_buff));
 			console_buffer.allowoverflow = true;
+			console_bufferevent = CreateEvent(NULL, FALSE, FALSE, NULL);
 #endif
 
 			// let QHOST hook in
@@ -1168,16 +1168,6 @@ void Sys_ConsoleOutput (const char *string)
 	if (!console_buffer.maxsize)
 		return;
 
-#ifdef USE_PYROADMIN
-	if (pyroadminport->intvalue)
-	{
-		int len;
-		char buff[1152];
-		len = Com_sprintf (buff, sizeof(buff), "line\n%s", string);
-		Netchan_OutOfBand (NS_SERVER, &netaddress_pyroadmin, len, (byte *)buff);
-	}
-#endif
-
 	p = string;
 	s = text;
 
@@ -1207,6 +1197,17 @@ void Sys_ConsoleOutput (const char *string)
 	//MessageBox (NULL, text, "hi", MB_OK);
 	//if (console_buffer.cursize + strlen(text)+2 > console_buffer.maxsize)
 	SZ_Print (&console_buffer, text);
+
+#if CONSOLETHREAD
+	// MH: notify console thread that there's text to display
+	if (console_buffer.cursize)
+	{
+		if (hwnd_Server)
+			PostMessage(hwnd_Server, WM_USER + 5, 0, 0);
+		else
+			SetEvent(console_bufferevent);
+	}
+#endif
 }
 
 #endif
@@ -1575,100 +1576,6 @@ skipPathCheck:
 
 	SetCurrentDirectory (curDir);
 }
-
-#ifdef ANTICHEAT
-#ifndef DEDICATED_ONLY
-/*
-typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS) (HANDLE, PBOOL);
- 
-BOOL IsWow64()
-{
-    BOOL bIsWow64 = FALSE;
-	LPFN_ISWOW64PROCESS fnIsWow64Process = (LPFN_ISWOW64PROCESS)GetProcAddress(GetModuleHandle("KERNEL32"),"IsWow64Process");
- 
-    if (NULL != fnIsWow64Process)
-    {
-        fnIsWow64Process(GetCurrentProcess(), &bIsWow64);
-    }
-    return bIsWow64;
-}*/
-
-typedef struct
-{
-	void (*Check) (void);
-} anticheat_export_t;
-
-anticheat_export_t *anticheat;
-
-typedef VOID * (*FNINIT) (VOID);
-
-int Sys_GetAntiCheatAPI (void)
-{
-	qboolean			updated = false;
-	HMODULE				hAC;
-	static FNINIT		init = NULL;
-
-	//windows version check
-	if (s_win95)
-	{
-		Com_Printf ("ERROR: Anticheat requires Windows 2000/XP/2003/Vista.\n", LOG_GENERAL);
-		return 0;
-	}
-
-	/*if (IsWow64())
-	{
-		Com_Printf ("ERROR: Anticheat is currently incompatible with 64 bit Windows.\n", LOG_GENERAL);
-		return 0;
-	}*/
-
-	//already loaded, just reinit
-	if (anticheat)
-	{
-		anticheat = (anticheat_export_t *)init ();
-		if (!anticheat)
-			return 0;
-		return 1;
-	}
-
-reInit:
-
-#if defined(_DEBUG)
-	hAC = LoadLibrary ("anticheatd");
-#else
-	hAC = LoadLibrary ("anticheat");
-#endif
-	if (!hAC)
-		return 0;
-
-	//this should never fail unless the anticheat.dll is bad
-	if (!init)
-	{
-		init = (FNINIT)GetProcAddress (hAC, "Initialize");
-		if (!init)
-			Sys_Error ("Couldn't GetProcAddress Initialize on anticheat.dll!\r\n\r\nPlease check you are using a valid anticheat.dll from http://antiche.at/");
-	}
-
-	anticheat = (anticheat_export_t *)init ();
-
-	if (!updated && !anticheat)
-	{
-		updated = true;
-		FreeLibrary (hAC);
-		hAC = NULL;
-		init = NULL;
-		goto reInit;
-	}
-
-	if (!anticheat)
-		return 0;
-
-	//if (!Sys_CheckFPUStatus ())
-	//	Com_Printf ("\2WARNING: The FPU control word has changed after loading anticheat!\n", LOG_GENERAL);
-
-	return 1;
-}
-#endif
-#endif
 
 typedef BOOL (WINAPI *ENUMERATELOADEDMODULES64) (HANDLE hProcess, PENUMLOADED_MODULES_CALLBACK64 EnumLoadedModulesCallback, PVOID UserContext);
 typedef DWORD (WINAPI *SYMSETOPTIONS) (DWORD SymOptions);
@@ -2523,54 +2430,29 @@ const __int64 nano100SecInSec = (__int64)10000000;
 void Sys_ProcessTimes_f (void)
 {
 	FILETIME		createTime, exitTime, kernelTime, userTime;
-	__int64			total, tmp;
-	DWORD			days, hours, mins;
 	double			seconds;
 
 	GetProcessTimes (GetCurrentProcess(), &createTime, &exitTime, &kernelTime, &userTime);
 
-	total = *(__int64 *)&kernelTime;
+	// MH: tweaked to use new time duration string function and show total
 
-	tmp = total / nano100SecInDay;
-	days = (DWORD)tmp;
-	total -= tmp * nano100SecInDay;
+	seconds = (double)*(__int64 *)&kernelTime / nano100SecInSec;
+	Com_Printf ("kernel  %s\n", LOG_GENERAL, TimeDurationString(seconds, true));
 
-	tmp = total / nano100SecInHour;
-	hours = (DWORD)tmp;
-	total -= tmp * nano100SecInHour;
+	seconds = (double)*(__int64 *)&userTime / nano100SecInSec;
+	Com_Printf ("user    %s\n", LOG_GENERAL, TimeDurationString(seconds, true));
 
-	tmp = total / nano100SecInMin;
-	mins = (DWORD)tmp;
-	total -= tmp * nano100SecInMin;
-
-	seconds = (double)total / (double)nano100SecInSec;
-	
-	Com_Printf ("%ud %uh %um %gs kernel\n", LOG_GENERAL, days, hours, mins, seconds);
-
-	total = *(__int64 *)&userTime;
-
-	tmp = total / nano100SecInDay;
-	days = (DWORD)tmp;
-	total -= tmp * nano100SecInDay;
-
-	tmp = total / nano100SecInHour;
-	hours = (DWORD)tmp;
-	total -= tmp * nano100SecInHour;
-
-	tmp = total / nano100SecInMin;
-	mins = (DWORD)tmp;
-	total -= tmp * nano100SecInMin;
-
-	seconds = (double)total / (double)nano100SecInSec;
-
-	Com_Printf ("%ud %uh %um %gs user\n", LOG_GENERAL, days, hours, mins, seconds);
+	seconds = (double)(*(__int64 *)&kernelTime + *(__int64 *)&userTime) / nano100SecInSec;
+	Com_Printf ("total   %s\n", LOG_GENERAL, TimeDurationString(seconds, true));
 }
 
 static unsigned int badspins, goodspins;
 
 void Sys_Spinstats_f (void)
 {
+#if !CONSOLETHREAD
 	Com_Printf ("%u fast spins, %u slow spins, %.2f%% slow.\n", LOG_GENERAL, goodspins, badspins, ((float)badspins / (float)(goodspins+badspins)) * 100.0f);
+#endif
 }
 
 #ifdef _M_IX86
@@ -2667,15 +2549,6 @@ static DWORD WINAPI MainLoopThread(void *p)
 
 		Sys_ReleaseConsoleMutex();
 
-		// notify console thread if there's text to display
-		if (console_buffer.cursize)
-		{
-			if (hwnd_Server)
-				PostMessage(hwnd_Server, WM_USER + 5, 0, 0);
-			else
-				SetEvent(console_bufferevent);
-		}
-
 		oldtime = newtime;
 	}
 	return 0;
@@ -2721,9 +2594,6 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	Sys_CheckFPUStatus ();
 
 	Qcommon_Init (argc, argv);
-
-	if (oldStyleConsole)
-		console_bufferevent = CreateEvent(NULL, FALSE, FALSE, NULL);
 
 	// MH: there is no console when running as a service so no need for a separate thread
 #ifdef DEDICATED_ONLY
@@ -2786,6 +2656,9 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 										Sys_AcquireConsoleMutex();
 										Cbuf_AddText (console_text);
 										Sys_ReleaseConsoleMutex();
+
+										// MH: interrupt NET_Sleep to avoid delays
+										NET_InterruptSleep();
 									}
 									break;
 

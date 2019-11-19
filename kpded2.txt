@@ -13,12 +13,16 @@ improvements, including the following:
   sounds and skies to be downloaded from the server. PAK files and other
   Game DLL specific files can also be downloaded from the server.
 
-* Reduced bandwidth, memory and CPU usage. Very low CPU usage when idle mode is
-  enabled by the Game DLL or config.
+* Reduced bandwidth, memory and CPU usage. Practically 0% CPU usage when idle
+  mode is enabled by the Game DLL or config.
 
 * Packet loss measurement and duplicate packet sending to reduce it.
 
 * Message buffering to prevent overflows.
+
+* Player country lookups using MaxMind GeoIP2 database.
+
+* Demo recording.
 
 * Support for team info in server browsers.
 
@@ -64,11 +68,6 @@ use:
 
 set win_priority auto
 
-If you will be modifying files while the server is running, you may also want
-to disable file info caching:
-
-set fs_cache 0
-
 See the descriptions below for what these settings do.
 
 On Linux, all files and directories should be lowercase. The 'fixfilenames'
@@ -109,7 +108,7 @@ con_filterlevel
     32768: GAMEDEBUG
 
 fs_cache
-  Bitmask of file info to cache. Default 7.
+  Bitmask of file info to cache. Default 0.
     1: Cache path and size of files inside PAK files
     2: Cache non-existent files
     4: Cache path and size of normal files
@@ -152,12 +151,12 @@ nostdout
   Disable console output. Linux only.
 
 public
-  This option works the same as standard but can also be set to send Gamespy
-  heartbeats to master servers. Default 1.
+  This option works the same as standard but can also be set to send one type
+  of heartbeat to master servers. Default 1.
     0: Disabled
-    1: Enable standard heartbeats
+    1: Auto-enable both heartbeats
     2: Enable Gamespy heartbeats
-    3: Enable both heartbeats
+    3: Enable Quake2 heartbeats
 
 sv_allow_any_model
   Allow players to use models that the server does not have. Default 0.
@@ -177,7 +176,7 @@ sv_allownodelta
   results in much greater bandwidth usage. Default 0.
 
 sv_autoidle
-  Automatically enable idle mode when the server is empty. Default 0.
+  Suspend the game when the server is empty. Default 0.
 
 sv_badcvarcheck
   Action to take on receiving an illegal cvarcheck response (illegal meaning
@@ -280,6 +279,11 @@ sv_gamedebug
     3: Show warnings and break on severe and normal errors.
     4+: Show warnings and break on all errors.
 
+sv_geoipdb
+  The MaxMind GeoIP2 database to use for player country lookups. The database
+  can be downloaded from http://dev.maxmind.com/geoip/geoip2/geolite2/.
+  Default "GeoLite2-Country.mmdb" if it exists, otherwise empty (disabled).
+
 sv_global_master
   Report to the master server at kingpin.info. Default 1.
 
@@ -307,8 +311,7 @@ sv_mapdownload_denied_message
   Default empty.
 
 sv_mapdownload_ok_message
-  Message to send to clients when they commence a map download.
-  Default empty.
+  Message to send to clients when they commence a map download. Default empty.
 
 sv_max_download_size
   Maximum file size in bytes that a client may attempt to auto download.
@@ -341,7 +344,7 @@ sv_msecs
 
 sv_nc_visibilitycheck
   Attempt to calculate player visibility server-side to thwart wall-hacks and
-  other cheats. CPU intensive. Default 0.
+  other cheats. Default 0.
 
 sv_nc_clientsonly
   Only apply sv_nc_visibilitycheck checking to other players. Default 1.
@@ -357,6 +360,9 @@ sv_no_zoom
 sv_packetdup
   Default number of duplicate packets sent to a client suffering packet loss,
   if they have rate set to at least 15000. Default 0.
+
+sv_pakdownload_message
+  Message to send to clients when they commence a PAK download. Default empty.
 
 sv_predict_on_lag
   Try to predict movement of lagged players to avoid frozen/warping players
@@ -382,7 +388,7 @@ sv_rcon_showoutput
 
 sv_restartmap
   If set, restart the server by changing to this map if the server crashes from
-  a non-fatal error. Default empty.
+  a non-fatal error. '*' can be used to terminate the server. Default empty.
 
 sv_recycle
   Reload the Game DLL on the next map load. Default 0.
@@ -408,13 +414,16 @@ sv_strict_userinfo_check
   Force client userinfo to conform to the userinfo specifications. This will
   prevent colored names amongst other things. Default 1.
 
+sv_underwater_sound
+  Play an underwater sound to players that are under water. Default 0.
+
 sv_unique_names
   Modify the name (append a number) of a player that tries to use the same name
   as another player on the server. Default 1.
 
 sv_uptime
   Display the server uptime statistics in the info response shown to server
-  browsers. Default 0.
+  browsers. Default 1.
 
 sv_validate_playerskins
   Perform strict checks on playerskins passed to the engine by the mod. When
@@ -510,13 +519,14 @@ checkcvars
   Send all cvar checks to all clients.
 
 clientrecord
-  Record a demo from a client's point of view.
-    Syntax : clientrecord <userid> <demoname>
+  Record a demo from a client's point of view. If demoname is omitted then one
+  will be auto-generated based on the client's name.
+    Syntax : clientrecord <userid> [demoname]
     Example: clientrecord 1 demo1
 
 clientstop
-  Stop recording a client. If userid is omitted, then all current recordings
-  are stopped.
+  Stop recording a client. If userid is omitted then all current recordings are
+  stopped.
     Syntax : clientstop [userid]
 
 cvarhelp
@@ -621,6 +631,9 @@ listuserinfochecks
 listwhiteholes
   List blackhole bypass entries.
 
+localtime
+  Show current time.
+
 minimize
   Minimize the console window. Windows only.
 
@@ -638,11 +651,16 @@ setclientfiles
     Syntax : setclientfiles [files...]
     Example: setclientfiles readme.txt
 
+setstarttime
+  Set a game start time to show in server browsers.
+    Syntax : setstarttime <hour:min|none> [days]
+    Example: setstarttime 21:30
+
 status
   This command works the same as standard but also includes the client rate
   and packets per second (cl_maxfps) values. 'mode' can optionally be set to 2
-  to get current download info, or 3 to get more connection info, or 'all' to
-  display all modes.
+  to get current download info, or 3 to get more connection info, or '4' to
+  list current demo recordings, or 'all' to display all modes.
     Syntax : status [mode]
 
 stuff
@@ -664,6 +682,9 @@ tray
   Enable or disable minimize to notification area. Windows only.
     Syntax : tray <on|off>
     Example: tray on
+
+uptime
+  Show how long ago the server started.
 
 whereis
   Find where a file is being loaded from on the filesystem.

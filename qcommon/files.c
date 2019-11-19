@@ -28,7 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <sys/types.h>
 #include <sys/stat.h>
 #ifdef _WIN32
-#define stat _stat
+#define stat _stati64 // MH: present in msvcrt.dll
 #endif
 /*
 =============================================================================
@@ -1709,16 +1709,14 @@ char /*@null@*/ *FS_NextPath (const char *prevpath)
 	searchpath_t	*s;
 	char			*prev;
 
-	// MH: disabled to avoid duplicate
-/*	if (!prevpath)
-		return fs_gamedir;*/
+	// MH: fs_gamedir is in fs_searchpaths so don't return it separately
 
-	prev = fs_gamedir;
+	prev = NULL;
 	for (s=fs_searchpaths ; s ; s=s->next)
 	{
 		if (s->pack)
 			continue;
-		if (prevpath == prev || !prevpath) // MH: include prevpath=NULL case here instead of above
+		if (prevpath == prev)
 			return s->filename;
 		prev = s->filename;
 	}
@@ -1823,7 +1821,11 @@ void FS_InitFilesystem (void)
 	// allows the game to run from outside the data tree
 	//
 	fs_basedir = Cvar_Get ("basedir", ".", CVAR_NOSET);
+#ifdef DEDICATED_ONLY
+	fs_cache = Cvar_Get ("fs_cache", "0", 0); // MH: disabled by default
+#else
 	fs_cache = Cvar_Get ("fs_cache", "7", 0);
+#endif
 	fs_noextern = Cvar_Get ("fs_noextern", "0", 0);
 
 	//

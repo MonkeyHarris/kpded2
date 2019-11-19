@@ -483,10 +483,6 @@ int wildcardfit (char *wildcard, char *test);
 /* 0  if *wildcard does not match *test                     */
 /* 1  if *wildcard matches *test                            */
 
-#ifdef ANTICHEAT
-int Sys_GetAntiCheatAPI (void);
-#endif
-
 //=============================================
 
 // portable case insensitive compare
@@ -582,7 +578,6 @@ void Sys_Sleep (int msec);
 #define	LOG_CHAT		0x2000
 #define	LOG_NET			0x4000
 #define	LOG_GAMEDEBUG	0x8000
-#define LOG_ANTICHEAT	0x10000
 
 // this is only here so the functions in q_shared.c and q_shwin.c can link
 NORETURN void Sys_Error (const char *error, ...) __attribute__ ((format (printf, 1, 2)));

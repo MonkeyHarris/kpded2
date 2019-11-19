@@ -163,6 +163,13 @@ void Sys_KillServer (int sig)
 	Com_Quit();
 }
 
+// MH: handle SIGHUP for log rotation
+void Sys_RestartLog(int sig)
+{
+	extern qboolean logfile_restart;
+	logfile_restart = true;
+}
+
 #if R1RELEASE == 3
 static int dlcallback (struct dl_phdr_info *info, size_t size, void *data)
 {
@@ -260,7 +267,6 @@ void Sys_Backtrace (int sig, siginfo_t *siginfo, void *secret)
 void Sys_ProcessTimes_f (void)
 {
 	struct rusage	usage;
-	int		days, hours, minutes;
 	double		seconds;
 	
 	if (getrusage (RUSAGE_SELF, &usage))
@@ -269,32 +275,16 @@ void Sys_ProcessTimes_f (void)
 		return;
 	}
 
-	//1 second = 1 000 000 microseconds
-	days = usage.ru_stime.tv_sec / 86400;
-	usage.ru_stime.tv_sec -= days * 86400;
+	// MH: tweaked to use new time duration string function and show total
 
-	hours = usage.ru_stime.tv_sec / 3600;
-	usage.ru_stime.tv_sec -= hours * 3600;
+	seconds = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1000000.0;
+	Com_Printf ("kernel  %s\n", LOG_GENERAL, TimeDurationString(seconds, true));
 
-	minutes = usage.ru_stime.tv_sec / 60;
-	usage.ru_stime.tv_sec -= minutes * 60;
+	seconds = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1000000.0;
+	Com_Printf ("user    %s\n", LOG_GENERAL, TimeDurationString(seconds, true));
 
-	seconds = usage.ru_stime.tv_sec + (usage.ru_stime.tv_usec / 1000000);
-	
-	Com_Printf ("%dd %dh %dm %gs kernel\n", LOG_GENERAL, days, hours, minutes, seconds);
-
-	days = usage.ru_utime.tv_sec / 86400;
-	usage.ru_utime.tv_sec -= days * 86400;
-
-	hours = usage.ru_utime.tv_sec / 3600;
-	usage.ru_utime.tv_sec -= hours * 3600;
-
-	minutes = usage.ru_utime.tv_sec / 60;
-	usage.ru_utime.tv_sec -= minutes * 60;
-
-	seconds = usage.ru_utime.tv_sec + (usage.ru_utime.tv_usec / 1000000);
-
-	Com_Printf ("%dd %dh %dm %gs user\n", LOG_GENERAL, days, hours, minutes, seconds);
+	seconds = usage.ru_stime.tv_sec + usage.ru_utime.tv_sec + (usage.ru_stime.tv_usec + usage.ru_utime.tv_usec) / 1000000.0;
+	Com_Printf ("total   %s\n", LOG_GENERAL, TimeDurationString(seconds, true));
 }
 
 static unsigned int goodspins, badspins;
@@ -359,6 +349,9 @@ void Sys_Init(void)
 	
 	signal (SIGTERM, Sys_KillServer);
 	signal (SIGINT, Sys_KillServer);
+
+	// MH: handle SIGHUP for log rotation
+	signal (SIGHUP, Sys_RestartLog);
 
 	//initialize timer base
 	Sys_Milliseconds ();
@@ -443,7 +436,7 @@ char *Sys_ConsoleInput(void)
 	len = read (0, text, sizeof(text));
 	if (len == 0)
 	{ // eof!
-		//stdin_active = false;
+		stdin_active = false;
 		return NULL;
 	}
 	else if (len == sizeof(text))

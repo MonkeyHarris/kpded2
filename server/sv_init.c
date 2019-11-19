@@ -49,19 +49,6 @@ int SV_FindIndex (const char *name, int start, int maxIndex, qboolean create)
 		return 0;
 	}
 
-#if KINGPIN
-	// MH: index images in reverse to avoid overlap with downloadables as much as possible
-	if (start == CS_IMAGES)
-	{
-		for (i=maxIndex-1 ; i>0 && sv.configstrings[start+i][0] ; i--)
-		{
-			if (!strcmp(sv.configstrings[start+i], name))
-				return i;
-		}
-		if (!i) i = maxIndex;
-	}
-	else
-#endif
 	for (i=1 ; i<maxIndex && sv.configstrings[start+i][0] ; i++)
 	{
 		if (!strcmp(sv.configstrings[start+i], name)) {
@@ -301,6 +288,11 @@ int EXPORT SV_SoundIndex (const char *name)
 		Com_sprintf(buf, sizeof(buf), "sound/%s", lwrname);
 		DownloadIndex(buf);
 	}
+
+	// keep the "standing in lava/slime" sound index for sv_underwater_sound check
+	if (!strcmp(name, "actors/player/male/fry.wav"))
+		sv.snd_fry = i;
+
 	return i;
 }
 
@@ -490,11 +482,6 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 	{
 		if (sv_global_master->intvalue)
 			NET_StringToAdr (GLOBAL_MASTER, &master_adr[0]);
-
-#if !KINGPIN
-		if (sv_cheaternet->intvalue)
-			NET_StringToAdr ("query.anticheat.r1ch.net:27930", &cheaternet_adr);
-#endif
 	}
 
 	sv.state = ss_dead;
@@ -554,6 +541,11 @@ static void SV_SpawnServer (const char *server, const char *spawnpoint, server_s
 
 		// MH: don't count acks during reconnect
 		svs.clients[i].netchan.countacks = false;
+
+#if KINGPIN
+		// MH: reset connection quality measurement state
+		svs.clients[i].quality_acc = svs.clients[i].quality_last = 0;
+#endif
 	}
 
 	sv.time = 1000;
@@ -745,20 +737,18 @@ void SV_InitGame (void)
 		// cause any connected clients to reconnect
 		SV_Shutdown ("Server restarted\n", true, false);
 	}
-#ifndef DEDICATED_ONLY
 	else
 	{
+#ifndef DEDICATED_ONLY
 		// make sure the client is down
 		CL_Drop (false, true);
 		SCR_BeginLoadingPlaque ();
-	}
 #endif
+		// MH: only reset uptime if server is just starting
+		server_start_time = time(NULL);
+	}
 
 	svs.initialized = true;
-
-	// MH: prevent uptime being reset by "map" command
-	if (!server_start_time)
-		server_start_time = time(NULL);
 
 	// get any latched variable changes (maxclients, etc)
 	Cvar_GetLatchedVars ();
@@ -819,16 +809,14 @@ void SV_InitGame (void)
 	// init game
 	SV_InitGameProgs ();
 
+	// MH: open GeoIP database
+	sv_geoipdb->changed(sv_geoipdb, sv_geoipdb->string, sv_geoipdb->string);
+
 	// heartbeats will always be sent to the id master
 	svs.last_heartbeat = curtime - 295000;		// send immediately (r1: give few secs for configs to run) (MH: using wall clock (not server time))
 
 	if (dedicated->intvalue)
 	{
-#if !KINGPIN
-		if (sv_cheaternet->intvalue)
-			NET_StringToAdr ("query.anticheat.r1ch.net:27930", &cheaternet_adr);
-#endif
-
 		if (sv_global_master->intvalue)
 			NET_StringToAdr (GLOBAL_MASTER, &master_adr[0]);
 	}
@@ -845,14 +833,6 @@ void SV_InitGame (void)
 			}
 		}
 	}
-
-#ifdef ANTICHEAT
-	if (sv_require_anticheat->intvalue)
-	{
-		SV_AntiCheat_Connect ();
-		SV_AntiCheat_WaitForInitialConnect ();
-	}
-#endif
 
 	Z_Verify("SV_InitGame:END");
 }
@@ -1014,28 +994,6 @@ void SV_Map (qboolean attractloop, const char *levelstring, qboolean loadgame)
 		//r1: do we really need this?
 		//Cbuf_CopyToDefer ();
 	}
-
-#ifdef ANTICHEAT
-	//FIXME: see how often this becomes a problem and rework acserver someday to handle it better...
-	if (SV_AntiCheat_IsConnected ())
-	{
-		client_t	*cl;
-		int			i;
-		for (i = 0; i < maxclients->intvalue; i++)
-		{
-			cl = &svs.clients[i];
-			if (cl->state >= cs_connected && !cl->anticheat_valid)
-			{
-				if ((sv_require_anticheat->intvalue == 2 || cl->anticheat_required == ANTICHEAT_REQUIRED)
-					&& (cl->anticheat_required != ANTICHEAT_EXEMPT))
-				{
-					SV_ClientPrintf (cl, PRINT_HIGH, ANTICHEATMESSAGE " Due to a server connection problem, you must reconnect to re-enable anticheat.\n");
-					SV_DropClient (cl, true);
-				}
-			}
-		}
-	}
-#endif
 
 	//check the server is running proper Q2 physics model
 	//if (!Sys_CheckFPUStatus ())

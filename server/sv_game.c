@@ -538,7 +538,7 @@ void EXPORT PF_Configstring (int index, char *val)
 
 		length = strlen (skin_name);
 #if KINGPIN
-		if (length < 13)
+		if (length < 11)
 		{
 			Com_DPrintf ("PF_Configstring: Invalid playerskin '%s'\n", val);
 			val = SV_FixPlayerSkin (val, player_name);
@@ -550,7 +550,8 @@ void EXPORT PF_Configstring (int index, char *val)
 #if KINGPIN
 			if (i==3 || i==7 || i==11)
 			{
-				if (skin_name[i]==' ') continue;
+				if (skin_name[i] == ' ')
+					continue;
 				goto bad;
 			}
 #endif
@@ -1157,7 +1158,7 @@ void SV_InitGameProgs (void)
 	if (g_features->intvalue)
 	{
 		svs.game_features = g_features->intvalue;
-		Com_Printf ("Extended game features enabled:%s%s%s%s\n", LOG_SERVER,
+		Com_Printf ("Extended game features enabled:%s%s%s%s%s\n", LOG_SERVER,
 #if KINGPIN
 			svs.game_features & GMF_CLIENTPOV ? " GMF_CLIENTPOV" : "", 
 #else
@@ -1166,11 +1167,12 @@ void SV_InitGameProgs (void)
 			svs.game_features & GMF_WANT_ALL_DISCONNECTS ? " GMF_WANT_ALL_DISCONNECTS" : "", 
 #if KINGPIN
 			svs.game_features & GMF_CLIENTTEAM ? " GMF_CLIENTTEAM" : "",
-			svs.game_features & GMF_CLIENTNOENTS ? " GMF_CLIENTNOENTS" : "");
+			svs.game_features & GMF_CLIENTNOENTS ? " GMF_CLIENTNOENTS" : "",
 #else
 			svs.game_features & GMF_PROPERINUSE ? " GMF_PROPERINUSE" : "", 
-			svs.game_features & GMF_MVDSPEC ? " GMF_MVDSPEC" : "");
+			svs.game_features & GMF_MVDSPEC ? " GMF_MVDSPEC" : "",
 #endif
+			svs.game_features & GMF_WANT_COUNTRY ? " GMF_WANT_COUNTRY" : "");
 	}
 	else
 		svs.game_features = 0;

@@ -139,6 +139,10 @@ int	NET_GetPacket (netsrc_t sock, netadr_t *net_from, sizebuf_t *net_message)
 			return 0;
 	}
 
+	// MH: ignore 0 length packets (used by NET_InterruptSleep)
+	if (!ret)
+		return -2;
+
 	net_packets_in++;
 	net_total_in += ret;
 
@@ -418,7 +422,6 @@ void NET_Init (void)
 	net_rcvbuf = Cvar_Get ("net_rcvbuf", "0", 0);
 	net_sndbuf = Cvar_Get ("net_sndbuf", "0", 0);
 
-	//r1: needed for pyroadmin hooks
 #ifndef NO_SERVER
 	if (dedicated->intvalue)
 		NET_Config (NET_SERVER);
@@ -514,4 +517,15 @@ char *NET_ErrorString (void)
 	case WSANO_DATA: return "WSANO_DATA";
 	default: return va("UNDEFINED ERROR %d", code);
 	}
+}
+
+// MH: interrupt NET_Sleep by sending ourself an empty packet
+void NET_InterruptSleep()
+{
+	struct sockaddr_in addr;
+	int s = sizeof(addr);
+	getsockname(ip_sockets[NS_SERVER], (struct sockaddr*)&addr, &s);
+	if (addr.sin_addr.s_addr == INADDR_ANY)
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	sendto (ip_sockets[NS_SERVER], "", 0, 0, (struct sockaddr*)&addr, sizeof(addr));
 }

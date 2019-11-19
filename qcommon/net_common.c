@@ -349,7 +349,10 @@ void NET_Sleep(int msec)
     struct timeval timeout;
 	fd_set	fdset;
 	extern cvar_t *dedicated;
-	//extern qboolean stdin_active;
+#if __linux__
+	extern qboolean stdin_active;
+	extern cvar_t *nostdin;
+#endif
 
 	if (!ip_sockets[NS_SERVER] || !dedicated->intvalue)
 		return; // we're not a server, just run full speed
@@ -358,6 +361,11 @@ void NET_Sleep(int msec)
 
 	FD_ZERO(&fdset);
 	FD_SET(ip_sockets[NS_SERVER], &fdset); // network socket
+#if __linux__
+	// MH: include stdin on Linux to avoid console input delays
+	if (stdin_active && !nostdin->intvalue)
+		FD_SET(0, &fdset);
+#endif
 #if KINGPIN
 	// MH: include Gamespy request socket
 	if (ip_sockets[NS_SERVER_GS])

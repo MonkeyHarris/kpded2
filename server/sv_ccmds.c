@@ -19,8 +19,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 #include "server.h"
 
-extern	time_t	server_start_time;
-
 /*
 ===============================================================================
 
@@ -41,6 +39,9 @@ static void SV_SetMaster_f (void)
 {
 	int		i, slot;
 	extern cvar_t	*public_server; // MH: should heartbeats be sent
+#if KINGPIN
+	extern qboolean	master_gs[MAX_MASTERS];		// MH: master servers are Gamespy?
+#endif
 
 	// only dedicated servers send heartbeats
 	if (!dedicated->intvalue)
@@ -54,6 +55,9 @@ static void SV_SetMaster_f (void)
 		Cvar_Set ("public", "1");
 
 	memset (&master_adr, 0, sizeof(master_adr));
+#if KINGPIN
+	memset (&master_gs, 0, sizeof(master_gs)); // MH: reset Gamespy status
+#endif
 
 	if (sv_global_master->intvalue)
 	{
@@ -1795,98 +1799,6 @@ static void SV_ListWhiteHoles_f (void)
 	DumpNetBlockList (&blackhole_exceptions);
 }
 
-#ifdef ANTICHEAT
-static void SV_AddACException_f (void)
-{
-	if (Cmd_Argc() == 1)
-	{
-		Com_Printf ("Purpose: Allow a given IP block to bypass anticheat requirements.\n"
-					"Syntax : addacexception <ip-address/mask>\n"
-					"Example: addacexception 192.168.0.1\n", LOG_GENERAL);
-		return;
-	}
-
-	if (ValidateAndAddToNetBlockList (Cmd_Argv(1), &anticheat_exceptions, TAGMALLOC_ANTICHEAT))
-	{
-		if (sv.state)
-			Com_Printf ("Anticheat exception added.\n", LOG_GENERAL);
-	}
-}
-
-static void SV_DelACException_f (void)
-{
-	int	ret;
-
-	if (Cmd_Argc() == 1)
-	{
-		Com_Printf ("Purpose: Remove a given IP block from the anticheat bypass list.\n"
-					"Syntax : delacexception <ip-address/mask>\n"
-					"Example: delacexception 192.168.0.1\n", LOG_GENERAL);
-		return;
-	}
-
-	ret = ValidateAndRemoveFromNetBlockList (Cmd_Argv(1), &anticheat_exceptions);
-
-	if (sv.state)
-	{
-		if (!ret)
-			Com_Printf ("Anticheat exception removed.\n", LOG_GENERAL);
-		else if (ret == -2)
-			Com_Printf ("Entry not found.\n", LOG_GENERAL);
-	}
-}
-
-static void SV_ListACExceptions_f (void)
-{
-	DumpNetBlockList (&anticheat_exceptions);
-}
-
-static void SV_AddACRequirement_f (void)
-{
-	if (Cmd_Argc() == 1)
-	{
-		Com_Printf ("Purpose: Force a given IP block to require anticheat.\n"
-					"Syntax : addacrequirement <ip-address/mask>\n"
-					"Example: addacrequirement 192.168.0.1\n", LOG_GENERAL);
-		return;
-	}
-
-	if (ValidateAndAddToNetBlockList (Cmd_Argv(1), &anticheat_requirements, TAGMALLOC_ANTICHEAT))
-	{
-		if (sv.state)
-			Com_Printf ("Anticheat requirement added.\n", LOG_GENERAL);
-	}
-}
-
-static void SV_DelACRequirement_f (void)
-{
-	int	ret;
-
-	if (Cmd_Argc() == 1)
-	{
-		Com_Printf ("Purpose: Remove a given IP block from the anticheat requirement list.\n"
-					"Syntax : delacrequirement <ip-address/mask>\n"
-					"Example: delacrequirement 192.168.0.1\n", LOG_GENERAL);
-		return;
-	}
-
-	ret = ValidateAndRemoveFromNetBlockList (Cmd_Argv(1), &anticheat_requirements);
-
-	if (sv.state)
-	{
-		if (!ret)
-			Com_Printf ("Anticheat requirement removed.\n", LOG_GENERAL);
-		else if (ret == -2)
-			Com_Printf ("Entry not found.\n", LOG_GENERAL);
-	}
-}
-
-static void SV_ListACRequirements_f (void)
-{
-	DumpNetBlockList (&anticheat_requirements);
-}
-#endif
-
 /*
 ==================
 SV_Kick_f
@@ -1916,9 +1828,11 @@ static void SV_Kick_f (void)
 
 	//r1: ignore kick message on connecting players (and those with no name)
 	if (sv_client->state == cs_spawned && sv_client->name[0])
-		SV_BroadcastPrintf (PRINT_HIGH, "%s was kicked\n", sv_client->name);
-	// print directly, because the dropped client won't get the
-	// SV_BroadcastPrintf message
+	{
+		sv_client->messagelevel += 100; // MH: don't send this to the target - they get their own message below
+		SV_BroadcastPrintf(PRINT_HIGH, "%s was kicked\n", sv_client->name);
+		sv_client->messagelevel -= 100; // MH: reset
+	}
 	SV_ClientPrintf (sv_client, PRINT_HIGH, "You were kicked from the game\n");
 	Com_Printf ("Dropping %s, console kick issued.\n", LOG_GENERAL|LOG_DROP, sv_client->name);
 	SV_DropClient (sv_client, true);
@@ -2348,16 +2262,14 @@ SV_Status_f
 */
 static void SV_Status_f (void)
 {
-	int			i;//, j, l;
+	int			i;
 	client_t	*cl;
 	char		*s;
 	int			ping;
 	int			statusMethod;
 	int			count;
 	int			downloads;
-
-//	player_state_t		*ps;
-	//union player_state_t	*ps;
+	int			demos;
 
 	if (!svs.clients)
 	{
@@ -2366,7 +2278,7 @@ static void SV_Status_f (void)
 	}
 
 	statusMethod = atoi(Cmd_Args());
-	downloads = count = 0;
+	demos = downloads = count = 0;
 
 loop:
 #if !KINGPIN
@@ -2379,7 +2291,7 @@ loop:
 #endif
 	if (statusMethod == 2)
 	{
-		Com_Printf (" # name            file                                  position done c\n", LOG_GENERAL);
+		Com_Printf (" # name            download                              position done c\n", LOG_GENERAL);
 		Com_Printf ("-- --------------- ------------------------------------- -------- ---- -\n", LOG_GENERAL);
 	}
 	else if (statusMethod == 3)
@@ -2391,6 +2303,12 @@ loop:
 		Com_Printf (" # name            msglen overflow\n", LOG_GENERAL);
 		Com_Printf ("-- --------------- ------ --------\n", LOG_GENERAL);
 #endif
+	}
+	// MH: client demo recordings
+	else if (statusMethod == 4)
+	{
+		Com_Printf (" # name            recording                   position\n", LOG_GENERAL);
+		Com_Printf ("-- --------------- --------------------------- --------\n", LOG_GENERAL);
 	}
 	else
 	{
@@ -2435,12 +2353,20 @@ loop:
 				continue;
 			case 3:
 #if KINGPIN
-				Com_Printf ("%2i %-15s %4d %3d %4d %.1f/%.1f\n", LOG_GENERAL, i, cl->name, cl->idletime / 10, cl->netchan.packetdup, 100 - (int)cl->quality,
-					cl->netchan.out_total ? ((float)cl->netchan.out_dropped / (float)cl->netchan.out_total) * 100 : 0.0f,
-					cl->netchan.in_total ? ((float)cl->netchan.in_dropped / (float)cl->netchan.in_total) * 100 : 0.0f);
+				{
+					char buf[16];
+					Com_sprintf(buf, sizeof(buf), "%.1f/%.1f", cl->netchan.out_total ? ((float)cl->netchan.out_dropped / (float)cl->netchan.out_total) * 100 : 0.0f,
+						cl->netchan.in_total ? ((float)cl->netchan.in_dropped / (float)cl->netchan.in_total) * 100 : 0.0f);
+					Com_Printf ("%2i %-15s %4d %3d %4d %10s\n", LOG_GENERAL, i, cl->name, cl->idletime / 10, cl->netchan.packetdup, 100 - (int)cl->quality, buf);
+				}
 #else
 				Com_Printf ("%2i %-15s %-6d %.3f\n", LOG_GENERAL, i, cl->name, cl->netchan.message.buffsize, cl->commandMsecOverflowCount);
 #endif
+				continue;
+			// MH: client demo recordings
+			case 4:
+				if (cl->demofile)
+					Com_Printf ("%2i %-15s %-27s %8d\n", LOG_GENERAL, i, cl->name, cl->demoname, ftell(cl->demofile));
 				continue;
 			default:
 				break;
@@ -2468,6 +2394,10 @@ loop:
 			Com_Printf ("%4i ", LOG_GENERAL, ping);
 		}
 
+		// MH: count client demo recordings
+		if (cl->demofile)
+			demos++;
+
 		s = NET_AdrToString (&cl->netchan.remote_address);
 
 		Com_Printf ("%7i %-22s", LOG_GENERAL, svs.realtime - cl->lastmessage, s);
@@ -2492,19 +2422,16 @@ loop:
 	Com_Printf ("\n", LOG_GENERAL);
 
 	// MH: allow all status modes at once
-	if (count && statusMethod < 3 && !Q_stricmp(Cmd_Args(), "all"))
+	if (count && statusMethod != 4 && !Q_stricmp(Cmd_Args(), "all"))
 	{
 		statusMethod++;
 #if KINGPIN
 		if (statusMethod == 1) statusMethod++;
 #endif
 		if (statusMethod == 2 && !downloads) statusMethod++;
-		goto loop;
+		if (statusMethod < 4 || demos)
+			goto loop;
 	}
-
-	// MH: show server's timing quality
-	if (statusMethod == 3)
-		Com_Printf ("server timing : %d\n", LOG_GENERAL, 100 - (int)svs.timing);
 
 #ifndef NPROFILE
 	if (statusMethod == 1)
@@ -2887,9 +2814,6 @@ static void SV_KillServer_f (void)
 		SV_Shutdown ("Server is restarting...\n", true, false);
 
 	NET_Config ( NET_NONE );	// close network sockets
-
-	// MH: reset uptime
-	server_start_time = 0;
 }
 
 /*
@@ -3052,7 +2976,7 @@ void SV_WriteClientDemoServerData (client_t *cl)
 	// the rest of the demo file will be individual frames
 }
 
-//MH: stop recording a client demo
+// MH: stop recording a client demo
 void SV_ClientStop_f (void)
 {
 	client_t	*cl;
@@ -3095,15 +3019,16 @@ void SV_ClientStop_f (void)
 	Com_Printf ("Stopped recording client %d (%s)\n", LOG_GENERAL, sv_client - svs.clients, sv_client->name);
 }
 
-//MH: begin recording a client demo
+// MH: begin recording a client demo
 void SV_ClientRecord_f (void)
 {
-	char	name[MAX_OSPATH];
+	char	name[MAX_QPATH];
+	char	*fullname;
 
-	if (Cmd_Argc() != 3)
+	if (Cmd_Argc() != 2 && Cmd_Argc() != 3)
 	{
 		Com_Printf ("Purpose: Record a demo from a client's point of view.\n"
-					"Syntax : clientrecord <userid> <demoname>\n"
+					"Syntax : clientrecord <userid> [demoname]\n"
 					"Example: clientrecord 1 demo1\n", LOG_GENERAL);
 		return;
 	}
@@ -3113,34 +3038,122 @@ void SV_ClientRecord_f (void)
 
 	if (sv_client->demofile)
 	{
-		Com_Printf ("Already recording client %d\n", LOG_GENERAL, sv_client - svs.clients);
+		Com_Printf ("Already recording client %d (%s) to %s\n", LOG_GENERAL, sv_client - svs.clients, sv_client->name, sv_client->demoname);
 		return;
 	}
 
-	if (strstr(Cmd_Argv(2), ".."))
+	if (Cmd_Argc() == 2)
 	{
-		Com_Printf ("Illegal filename.\n", LOG_GENERAL);
-		return;
+		// auto-generate filename
+		int n;
+		char clname[32], *p1, *p2;
+		p1 = sv_client->name;
+		p2 = clname;
+		while (1)
+		{
+			int c = *p1;
+			if (c != '\\' && c != '/' && c != ':' && c != '*' && c != '?' && c != '\"' && c != '<' && c != '>' && c != '|' && c != '.' && c != ' ')
+				*p2++ = c;
+			if (!c)
+				break;
+			p1++;
+		}
+		if (!*clname)
+			strcpy(clname, "unknown");
+		for (n = 1;; n++)
+		{
+			FILE *f;
+			Com_sprintf (name, sizeof(name), n > 1 ? "demos/%s-%d.dm2" : "demos/%s.dm2", clname, n);
+			fullname = va("%s/%s", FS_Gamedir(), name);
+			f = fopen (fullname, "rb");
+			if (!f)
+				break;
+			fclose(f);
+		}
 	}
-
-	//
-	// open the demo file
-	//
-	Com_sprintf (name, sizeof(name), "%s/demos/%s.dm2", FS_Gamedir(), Cmd_Argv(2));
+	else
+	{
+		if (strstr(Cmd_Argv(2), ".."))
+		{
+			Com_Printf ("Illegal filename.\n", LOG_GENERAL);
+			return;
+		}
+		Com_sprintf (name, sizeof(name), "demos/%s.dm2", Cmd_Argv(2));
+		fullname = va("%s/%s", FS_Gamedir(), name);
+	}
 
 	Com_Printf ("Recording client %d (%s) to %s\n", LOG_GENERAL, sv_client - svs.clients, sv_client->name, name);
-	FS_CreatePath (name);
-	sv_client->demofile = fopen (name, "wb");
+	FS_CreatePath (fullname);
+	sv_client->demofile = fopen (fullname, "wb");
 	if (!sv_client->demofile)
 	{
 		Com_Printf ("ERROR: couldn't open file.\n", LOG_GENERAL);
 		return;
 	}
 
+	strcpy(sv_client->demoname, name);
 	sv_client->demostart = (unsigned)-1;
 
 	if (sv_client->state == cs_spawned)
 		SV_WriteClientDemoServerData(sv_client);
+}
+
+// MH: set a game start time for server browsers
+void SV_SetStartTime_f (void)
+{
+	extern time_t game_start_time;
+	time_t current;
+	struct tm *t;
+	unsigned h, m;
+	int d;
+
+	if (Cmd_Argc() == 2 && !strcmp(Cmd_Argv(1), "none"))
+	{
+		game_start_time = 0;
+		return;
+	}
+
+	if ((Cmd_Argc() != 2 && Cmd_Argc() != 3) || sscanf(Cmd_Argv(1), "%u:%u", &h, &m) != 2 || h > 23 || m > 59)
+	{
+		Com_Printf ("Purpose: Set a game start time to show in server browsers.\n"
+					"Syntax : setstarttime <hour:min|none> [days]\n"
+					"Example: setstarttime 21:30\n", LOG_GENERAL);
+		return;
+	}
+
+	current = time(NULL);
+	t = localtime(&current);
+	d = (h - t->tm_hour) * 60 + m - t->tm_min;
+	if (Cmd_Argc() == 3)
+		d += atoi(Cmd_Argv(2)) * 24 * 60;
+	if (d < 0)
+		d += 24 * 60; // next day
+	game_start_time = current - t->tm_sec + d * 60;
+
+	Com_Printf ("Game starts in %s\n", LOG_GENERAL, TimeDurationString(d * 60, false));
+}
+
+// MH: show current time
+void SV_LocalTime_f (void)
+{
+	time_t	tm;
+
+	time(&tm);
+	Com_Printf ("%s\n", LOG_GENERAL, ctime(&tm));
+}
+
+// MH: show uptime
+void SV_Uptime_f (void)
+{
+	extern time_t server_start_time;
+
+	if (!svs.initialized)
+	{
+		Com_Printf ("No server running.\n", LOG_GENERAL);
+		return;
+	}
+
+	Com_Printf ("%s\n", LOG_GENERAL, TimeDurationString(time(NULL) - server_start_time, true));
 }
 
 //===========================================================
@@ -3257,27 +3270,21 @@ void SV_InitOperatorCommands (void)
 	Cmd_AddCommand ("pc", SV_PassiveConnect_f);
 #endif
 
-#ifdef ANTICHEAT
-	Cmd_AddCommand ("svaclist", SVCmd_SVACList_f);
-	Cmd_AddCommand ("svacinfo", SVCmd_SVACInfo_f);
-	Cmd_AddCommand ("svacupdate", SVCmd_SVACUpdate_f);
-	Cmd_AddCommand ("svacinvalidate", SVCmd_SVACInvalidate_f);
-
-	Cmd_AddCommand ("addacexception", SV_AddACException_f);
-	Cmd_AddCommand ("delacexception", SV_DelACException_f);
-	Cmd_AddCommand ("listacexceptions", SV_ListACExceptions_f);
-
-	Cmd_AddCommand ("addacrequirement", SV_AddACRequirement_f);
-	Cmd_AddCommand ("delacrequirement", SV_DelACRequirement_f);
-	Cmd_AddCommand ("listacrequirements", SV_ListACRequirements_f);
-#endif
-
 	// MH: command to dump the current map's entity string
 	Cmd_AddCommand ("dumpents", SV_DumpEnts_f);
 
 	// MH: client demos
 	Cmd_AddCommand ("clientrecord", SV_ClientRecord_f);
 	Cmd_AddCommand ("clientstop", SV_ClientStop_f);
+
+	// MH: set a game start time for server browsers
+	Cmd_AddCommand ("setstarttime", SV_SetStartTime_f);
+
+	// MH: show current time
+	Cmd_AddCommand ("localtime", SV_LocalTime_f);
+
+	// MH: show uptime
+	Cmd_AddCommand ("uptime", SV_Uptime_f);
 
 #if KINGPIN
 	// MH: set downloadable client files

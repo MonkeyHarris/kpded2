@@ -784,32 +784,26 @@ static void Cvar_List_f (void)
 		if (argLen && Q_strncasecmp (var->name, Cmd_Argv(1), argLen))
 			continue;
 
-		if (!argLen)
-		{
-			if (var->flags & CVAR_ARCHIVE)
-				Com_Printf ("*", LOG_GENERAL);
-			else
-				Com_Printf (" ", LOG_GENERAL);
-			if (var->flags & CVAR_USERINFO)
-				Com_Printf ("U", LOG_GENERAL);
-			else
-				Com_Printf (" ", LOG_GENERAL);
-			if (var->flags & CVAR_SERVERINFO)
-				Com_Printf ("S", LOG_GENERAL);
-			else
-				Com_Printf (" ", LOG_GENERAL);
-			if (var->flags & CVAR_NOSET)
-				Com_Printf ("-", LOG_GENERAL);
-			else if (var->flags & CVAR_LATCH)
-				Com_Printf ("L", LOG_GENERAL);
-			else
-				Com_Printf (" ", LOG_GENERAL);
-			Com_Printf (" %s \"%s\"\n", LOG_GENERAL, var->name, var->string);
-		}
+		// MH: always show the details
+		if (var->flags & CVAR_ARCHIVE)
+			Com_Printf ("*", LOG_GENERAL);
 		else
-		{
-			Com_Printf ("v %s\n", LOG_GENERAL, var->name);
-		}
+			Com_Printf (" ", LOG_GENERAL);
+		if (var->flags & CVAR_USERINFO)
+			Com_Printf ("U", LOG_GENERAL);
+		else
+			Com_Printf (" ", LOG_GENERAL);
+		if (var->flags & CVAR_SERVERINFO)
+			Com_Printf ("S", LOG_GENERAL);
+		else
+			Com_Printf (" ", LOG_GENERAL);
+		if (var->flags & CVAR_NOSET)
+			Com_Printf ("-", LOG_GENERAL);
+		else if (var->flags & CVAR_LATCH)
+			Com_Printf ("L", LOG_GENERAL);
+		else
+			Com_Printf (" ", LOG_GENERAL);
+		Com_Printf (" %s \"%s\"\n", LOG_GENERAL, var->name, var->string);
 	}
 	if (!argLen)
 		Com_Printf ("%i cvars\n", LOG_GENERAL, i);

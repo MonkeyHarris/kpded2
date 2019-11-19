@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #if KINGPIN
 #define WATERLEVEL_FIX // MH: allow shooting in slightly deeper water
+#define DEADHEIGHT_FIX // MH: fix the bounding box height of dead players
 #endif
 
 #define	STEPSIZE	18
@@ -836,7 +837,7 @@ static void PM_AirMove (void)
 // PGM
 
 #if KINGPIN
-		if (pm->s.pm_type!=PM_HOVERCAR_GROUND && pm->s.pm_type!=PM_BIKE)
+		if (pm->s.pm_type != PM_HOVERCAR_GROUND && pm->s.pm_type != PM_BIKE)
 #endif
 		if (FLOAT_EQ_ZERO(pml.velocity[0]) && FLOAT_EQ_ZERO(pml.velocity[1]))
 			return;
@@ -1293,7 +1294,13 @@ static void PM_CheckDuck (void)
 #endif
 		if (pm->s.pm_type == PM_DEAD)
 		{
+#ifdef DEADHEIGHT_FIX
+			pm->maxs[2] = -4;
+			pm->viewheight = -8;
+			return;
+#else
 			pm->s.pm_flags |= PMF_DUCKED;
+#endif
 		}
 		else if (pm->cmd.upmove < 0 && (pm->s.pm_flags & PMF_ON_GROUND) )
 		{	// duck

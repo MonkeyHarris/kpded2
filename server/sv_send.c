@@ -127,7 +127,11 @@ void SV_ClientPrintf (client_t *cl, int level, const char *fmt, ...)
 	char		string[MAX_USABLEMSG-3];
 	int			msglen;
 
+#if KINGPIN
+	if ((level & 3) < cl->messagelevel) // MH: high bits can be used for coloured text with patched clients
+#else
 	if (level < cl->messagelevel)
+#endif
 		return;
 
 	va_start (argptr,fmt);
@@ -572,11 +576,11 @@ void EXPORT SV_Multicast (vec3_t /*@null@*/ origin, multicast_t to)
 
 #if KINGPIN
 		// MH: don't send image configstring updates while downloadables are in their place
-		if (client->state != cs_spawned && MSG_GetType() == svc_configstring && sv.dlconfigstrings[0][0])
+		if (client->state != cs_spawned && MSG_GetType() == svc_configstring)
 		{
 			byte *data = MSG_GetData();
 			short cs = *(short*)(data + 1);
-			if (cs > CS_IMAGES && cs < CS_IMAGES + MAX_IMAGES && sv.dlconfigstrings[cs - CS_IMAGES - 1][0])
+			if (cs > CS_IMAGES && cs < CS_IMAGES + MAX_IMAGES)
 				continue;
 		}
 
@@ -926,7 +930,11 @@ void SV_WriteReliableMessages (client_t *client, int buffSize)
 
 				//it fits, write it in
 				// MH: append text to previous message if possible to save a few bytes
+#if KINGPIN
+				if (lastmsg >= 0 && message->data[0] == svc_print && (message->data[1] & 3) < PRINT_CHAT && client->netchan.message.data[lastmsg] == message->data[0] && client->netchan.message.data[lastmsg + 1] == message->data[1])
+#else
 				if (lastmsg >= 0 && message->data[0] == svc_print && message->data[1] < PRINT_CHAT && client->netchan.message.data[lastmsg] == message->data[0] && client->netchan.message.data[lastmsg+1] == message->data[1])
+#endif
 				{
 					client->netchan.message.cursize--; // remove terminator
 					SZ_Write (&client->netchan.message, message->data + 2, message->cursize - 2);
@@ -1254,7 +1262,7 @@ doneframe:
 					}
 				}
 				// MH: do sounds in the same pass, including svc_muzzleflash (gunshot sound) and stuffed "play" messages
-				else if (message->data[0] == svc_sound || message->data[0] == svc_muzzleflash || (message->data[0] == svc_stufftext && !strncmp(message->data + 1, "play ", 5)))
+				else if (message->data[0] == svc_sound || message->data[0] == svc_muzzleflash || (message->data[0] == svc_stufftext && !Q_strncasecmp(message->data + 1, "play ", 5)))
 				{
 				}
 #if KINGPIN
@@ -1387,14 +1395,24 @@ doneframe:
 	if (client->demofile)
 		SV_WriteClientDemoMessage (client, msg.cursize, msg.data);
 
-	// send the datagram
-	ret = Netchan_Transmit (&client->netchan, msg.cursize, msg.data);
-	if (ret == -1)
 	{
-		SV_KickClient (client, "connection reset by peer", NULL);
-		SV_CleanClient (client);
-		client->state = cs_free;	// don't bother with zombie state
-		return false;
+		// MH: limit duplicates according to client's rate
+		int packetdup = client->netchan.packetdup;
+		if (packetdup && client->message_total * (1 + packetdup) > client->rate)
+			client->netchan.packetdup = client->rate / client->message_total - 1;
+
+		// send the datagram
+		ret = Netchan_Transmit (&client->netchan, msg.cursize, msg.data);
+		if (ret == -1)
+		{
+			SV_KickClient (client, "connection reset by peer", NULL);
+			SV_CleanClient (client);
+			client->state = cs_free;	// don't bother with zombie state
+			return false;
+		}
+
+		// MH: restore packetdup setting
+		client->netchan.packetdup = packetdup;
 	}
 
 	// record the size for rate estimation
@@ -1443,6 +1461,9 @@ static qboolean SV_RateDrop (client_t *c)
 	{
 		total += c->message_size[i];
 	}
+
+	// MH: retain total for packetdup check
+	c->message_total = total;
 
 	if (total > c->rate)
 	{

@@ -1196,9 +1196,6 @@ enum tagmalloc_tags_e
 	TAGMALLOC_CMDBANS,
 	TAGMALLOC_REDBLACK,
 	TAGMALLOC_LRCON,
-#ifdef ANTICHEAT
-	TAGMALLOC_ANTICHEAT,
-#endif
 #if KINGPIN
 	TAGMALLOC_DOWNLOAD_CACHE, // MH: download cache entries
 #endif
@@ -1233,6 +1230,9 @@ int __cdecl fast_tolower(int c);
 #define fast_tolower(x) tolower(x)
 #endif
 char *StripQuotes (char *string);
+
+// MH: generate a string from a time duration
+char *TimeDurationString (double seconds, qboolean showseconds);
 
 #ifdef _WIN32
 //#ifdef _DEBUG

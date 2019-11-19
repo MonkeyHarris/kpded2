@@ -459,7 +459,7 @@ qboolean Netchan_Process (netchan_t *chan, sizebuf_t *msg)
 	// MH: use acknowledgements to measure server->client packet loss (replaces sv_lag_stats option)
 	if (sequence_ack > chan->incoming_acknowledged)
 	{
-		if (chan->countacks && (curtime - chan->last_received) < 90)
+		if (chan->countacks && (curtime - chan->last_received < 90 || sequence_ack == chan->incoming_acknowledged + 1))
 		{
 			chan->out_total += sequence_ack - chan->incoming_acknowledged;
 			chan->out_dropped += sequence_ack - chan->incoming_acknowledged - 1;

@@ -1956,6 +1956,11 @@ void SV_BuildClientFrame (client_t *client)
 				state->renderfx2 &= ~RF2_MONEYBAG;
 		}
 
+		// MH: underwater sound
+		if (sv_underwater_sound->intvalue && (ent == clent || ((svs.game_features & GMF_CLIENTNUM) && e == clent->client->clientNum + 1))
+			 && (clent->client->ps.rdflags & RDF_UNDERWATER) && state->sound != sv.snd_fry)
+			state->sound = SV_SoundIndex("world/watr_un.wav");
+
 		// MH: count entities
 		if (state->modelindex || state->num_parts)
 			parts += (state->num_parts ? state->num_parts : 1);
